@@ -26,6 +26,7 @@ import {
   FileSpreadsheet,
   CheckCheck,
   Target,
+  RotateCcw,
 } from "lucide-react";
 import {
   BudgetFilter,
@@ -182,7 +183,7 @@ export default function BudgetAppPage() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [monthCloseModalOpen, setMonthCloseModalOpen] = useState(false);
 
-  // Inline quick-edit & quick-add state for the Top Income / Paycheck Banner Card
+  // Inline quick-edit & quick-add state for the Top Income / Paycheck Banner Card & Expense rows
   const [inlineIncomeDrafts, setInlineIncomeDrafts] = useState<
     Record<string, string>
   >({});
@@ -194,6 +195,15 @@ export default function BudgetAppPage() {
   const [quickIncomeSplit, setQuickIncomeSplit] = useState<
     "shared" | "personal_a" | "personal_b"
   >("shared");
+
+  // O5: Pre-import state snapshot for 1-Tap Undo Last Import
+  const [lastImportSnapshot, setLastImportSnapshot] = useState<{
+    items: BudgetItem[];
+    records: MonthlyRecord[];
+    merchantRules: NonNullable<Household["merchant_rules"]>;
+    createdItemIds: string[];
+    importedCount: number;
+  } | null>(null);
 
   const t = translations[locale];
 
@@ -655,110 +665,19 @@ export default function BudgetAppPage() {
     );
   };
 
-  const upsertImportedMonthRecord = async (
-    itemId: string,
-    targetYM: string,
-    expectedSnapshot: number,
-    monthRows: ImportedRowAction[]
-  ) => {
-    const monthSum = Math.max(
-      0,
-      Math.round(monthRows.reduce((s, r) => s + r.amount, 0) * 100) / 100
-    );
-    const noteText: string | null = null;
-
-    const subTxs =
-      monthRows.length > 1
-        ? monthRows.map((r, idx) => ({
-            id: `tx-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
-            household_id: household.id,
-            monthly_record_id: "",
-            amount: r.amount,
-            description: r.description,
-            spent_on: r.date,
-          }))
-        : [];
-
-    if (userId && dbReady) {
-      const { data: recData } = await supabase
-        .from("monthly_records")
-        .upsert(
-          {
-            household_id: household.id,
-            item_id: itemId,
-            year_month: targetYM,
-            expected_snapshot: expectedSnapshot,
-            actual_amount: monthSum,
-            status: "confirmed",
-            notes: noteText,
-            confirmed_by: userId,
-            confirmed_at: new Date().toISOString(),
-          },
-          { onConflict: "item_id,year_month" }
-        )
-        .select()
-        .single();
-
-      if (recData) {
-        const insertedTxs: NonNullable<MonthlyRecord["transactions"]> = [];
-        if (monthRows.length > 1) {
-          for (const r of monthRows) {
-            const { data: txRow } = await supabase
-              .from("record_transactions")
-              .insert({
-                household_id: household.id,
-                monthly_record_id: recData.id,
-                amount: r.amount,
-                description: r.description,
-                spent_on: r.date,
-                created_by: userId,
-              })
-              .select()
-              .single();
-            if (txRow) insertedTxs.push(txRow);
-          }
-        }
-
-        setRecords((prev) => [
-          ...prev.filter(
-            (r) => !(r.item_id === itemId && r.year_month === targetYM)
-          ),
-          {
-            ...(recData as MonthlyRecord),
-            expected_snapshot: Number(recData.expected_snapshot),
-            actual_amount: Number(recData.actual_amount),
-            transactions: insertedTxs,
-          },
-        ]);
-        return;
-      }
-    }
-
-    const recId = `rec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const localRec: MonthlyRecord = {
-      id: recId,
-      household_id: household.id,
-      item_id: itemId,
-      year_month: targetYM,
-      expected_snapshot: expectedSnapshot,
-      actual_amount: monthSum,
-      status: "confirmed",
-      notes: noteText,
-      confirmed_at: new Date().toISOString(),
-      transactions: subTxs.map((t) => ({ ...t, monthly_record_id: recId })),
-    };
-
-    setRecords((prev) => [
-      ...prev.filter(
-        (r) => !(r.item_id === itemId && r.year_month === targetYM)
-      ),
-      localRec,
-    ]);
-  };
-
+  // O2 + O4 + O5: Batch-Optimized Multi-Month Import with Pre-Import Undo Snapshot
   const handleImportRows = async (rows: ImportedRowAction[]) => {
     const activeRows = rows.filter((r) => r.actionType !== "skip");
     if (activeRows.length === 0) return;
+
+    // O5: Save pre-import snapshot for 1-Tap Undo
+    const snapshotItems = [...items];
+    const snapshotRecords = records.map((r) => ({
+      ...r,
+      transactions: r.transactions ? [...r.transactions] : [],
+    }));
+    const snapshotRules = [...(household.merchant_rules || [])];
+    const createdItemIds: string[] = [];
 
     // 1. Group new items (new_monthly & new_once) by merchantKey so each merchant creates only ONE BudgetItem
     const newMerchantMap = new Map<string, ImportedRowAction[]>();
@@ -783,6 +702,15 @@ export default function BudgetAppPage() {
 
     const newlyCreatedRules = [...(household.merchant_rules || [])];
     let rulesAdded = false;
+    const workingItems = [...items];
+
+    interface PendingRecordBatch {
+      itemId: string;
+      targetYM: string;
+      expectedSnapshot: number;
+      monthRows: ImportedRowAction[];
+    }
+    const recordsBatch: PendingRecordBatch[] = [];
 
     // Process each unique new merchant group once
     for (const [, merchantRows] of newMerchantMap.entries()) {
@@ -790,7 +718,6 @@ export default function BudgetAppPage() {
       const targetGroupId = sample.targetGroupId!;
       const isOnce = sample.actionType === "new_once";
 
-      // Group this merchant's rows by YYYY-MM
       const byMonth = new Map<string, ImportedRowAction[]>();
       for (const r of merchantRows) {
         const ym = r.yearMonth || r.date.slice(0, 7) || yearMonth;
@@ -808,7 +735,7 @@ export default function BudgetAppPage() {
       );
 
       // Check if an item with this exact name already exists in the household
-      const existingSameName = items.find(
+      const existingSameName = workingItems.find(
         (i) =>
           i.name.toLowerCase().trim() ===
           sample.description.toLowerCase().trim()
@@ -843,43 +770,41 @@ export default function BudgetAppPage() {
               ...itemData,
               household_id: household.id,
               is_active: true,
-              sort_order: items.length + 1,
+              sort_order: workingItems.length + 1,
             })
             .select()
             .single();
           if (inserted) {
             createdId = inserted.id;
-            setItems((prev) => [...prev, inserted as BudgetItem]);
+            workingItems.push(inserted as BudgetItem);
           } else {
-            setItems((prev) => [
-              ...prev,
-              {
-                ...itemData,
-                id: createdId,
-                household_id: household.id,
-                is_active: true,
-                sort_order: prev.length + 1,
-              },
-            ]);
-          }
-        } else {
-          setItems((prev) => [
-            ...prev,
-            {
+            workingItems.push({
               ...itemData,
               id: createdId,
               household_id: household.id,
               is_active: true,
-              sort_order: prev.length + 1,
-            },
-          ]);
+              sort_order: workingItems.length + 1,
+            });
+          }
+        } else {
+          workingItems.push({
+            ...itemData,
+            id: createdId,
+            household_id: household.id,
+            is_active: true,
+            sort_order: workingItems.length + 1,
+          });
         }
+        createdItemIds.push(createdId);
         itemIdToUse = createdId;
       }
 
-      // Save a smart rule so future imports automatically match this item
-      const cleanPat = sample.description.toLowerCase().trim();
+      // O4: Save a smart rule when creating new monthly items (unless explicitly unchecked)
+      const cleanPat = (sample.rulePattern || sample.description)
+        .toLowerCase()
+        .trim();
       if (
+        !isOnce &&
         cleanPat.length >= 2 &&
         !newlyCreatedRules.some((r) => r.pattern.toLowerCase() === cleanPat)
       ) {
@@ -891,20 +816,19 @@ export default function BudgetAppPage() {
         rulesAdded = true;
       }
 
-      // Upsert monthly records for every month present in this merchant's rows
       for (const [ym, mRows] of byMonth.entries()) {
-        await upsertImportedMonthRecord(
-          itemIdToUse,
-          ym,
-          Math.round(latestMonthSum),
-          mRows
-        );
+        recordsBatch.push({
+          itemId: itemIdToUse,
+          targetYM: ym,
+          expectedSnapshot: Math.round(latestMonthSum),
+          monthRows: mRows,
+        });
       }
     }
 
-    // Process rows matched to existing items (grouped by item and month)
+    // Collect rows matched to existing items (grouped by item and month)
     for (const [targetItemId, itemRows] of existingItemMap.entries()) {
-      const target = items.find((i) => i.id === targetItemId);
+      const target = workingItems.find((i) => i.id === targetItemId);
       if (!target) continue;
 
       const byMonth = new Map<string, ImportedRowAction[]>();
@@ -916,18 +840,273 @@ export default function BudgetAppPage() {
       }
 
       for (const [ym, mRows] of byMonth.entries()) {
-        await upsertImportedMonthRecord(
-          target.id,
-          ym,
-          target.expected_amount,
-          mRows
-        );
+        recordsBatch.push({
+          itemId: target.id,
+          targetYM: ym,
+          expectedSnapshot: target.expected_amount,
+          monthRows: mRows,
+        });
       }
+    }
+
+    setItems(workingItems);
+
+    // O2: Prepare merged monthly records & sub-transactions in bulk
+    const nowIso = new Date().toISOString();
+    const preparedRecords = recordsBatch.map((b) => {
+      const existingRec = snapshotRecords.find(
+        (r) => r.item_id === b.itemId && r.year_month === b.targetYM
+      );
+      const prevTxs = existingRec?.transactions || [];
+
+      // Combine existing sub-transactions (if any) with new imported rows
+      const combinedTxInputs: {
+        amount: number;
+        description: string;
+        spent_on: string;
+      }[] = [
+        ...prevTxs.map((t) => ({
+          amount: Number(t.amount),
+          description: t.description,
+          spent_on: t.spent_on,
+        })),
+        ...b.monthRows.map((r) => ({
+          amount: r.amount,
+          description: r.description,
+          spent_on: r.date,
+        })),
+      ];
+
+      const totalAmount =
+        prevTxs.length > 0
+          ? Math.max(
+              0,
+              Math.round(
+                combinedTxInputs.reduce((s, t) => s + t.amount, 0) * 100
+              ) / 100
+            )
+          : Math.max(
+              0,
+              Math.round(b.monthRows.reduce((s, r) => s + r.amount, 0) * 100) /
+                100
+            );
+
+      const keepSubTxs =
+        combinedTxInputs.length > 1 ? combinedTxInputs : [];
+
+      return {
+        ...b,
+        existingRecId: existingRec?.id,
+        totalAmount,
+        keepSubTxs,
+      };
+    });
+
+    if (userId && dbReady && preparedRecords.length > 0) {
+      const upsertPayloads = preparedRecords.map((p) => ({
+        household_id: household.id,
+        item_id: p.itemId,
+        year_month: p.targetYM,
+        expected_snapshot: p.expectedSnapshot,
+        actual_amount: p.totalAmount,
+        status: "confirmed" as const,
+        notes: null,
+        confirmed_by: userId,
+        confirmed_at: nowIso,
+      }));
+
+      const { data: upsertedRecs } = await supabase
+        .from("monthly_records")
+        .upsert(upsertPayloads, { onConflict: "item_id,year_month" })
+        .select();
+
+      if (upsertedRecs && upsertedRecs.length > 0) {
+        const recIdsToClean = upsertedRecs.map((r) => r.id);
+        await supabase
+          .from("record_transactions")
+          .delete()
+          .in("monthly_record_id", recIdsToClean);
+
+        const txInsertPayloads: {
+          household_id: string;
+          monthly_record_id: string;
+          amount: number;
+          description: string;
+          spent_on: string;
+          created_by: string;
+        }[] = [];
+
+        for (const dbRec of upsertedRecs) {
+          const matchPrep = preparedRecords.find(
+            (p) =>
+              p.itemId === dbRec.item_id && p.targetYM === dbRec.year_month
+          );
+          if (matchPrep && matchPrep.keepSubTxs.length > 1) {
+            for (const tx of matchPrep.keepSubTxs) {
+              txInsertPayloads.push({
+                household_id: household.id,
+                monthly_record_id: dbRec.id,
+                amount: tx.amount,
+                description: tx.description,
+                spent_on: tx.spent_on,
+                created_by: userId,
+              });
+            }
+          }
+        }
+
+        const insertedTxByRecId = new Map<
+          string,
+          NonNullable<MonthlyRecord["transactions"]>
+        >();
+        if (txInsertPayloads.length > 0) {
+          const { data: insertedTxs } = await supabase
+            .from("record_transactions")
+            .insert(txInsertPayloads)
+            .select();
+          for (const tx of insertedTxs || []) {
+            const list = insertedTxByRecId.get(tx.monthly_record_id) || [];
+            list.push(tx);
+            insertedTxByRecId.set(tx.monthly_record_id, list);
+          }
+        }
+
+        setRecords((prev) => {
+          const updatedKeys = new Set(
+            upsertedRecs.map((r) => `${r.item_id}::${r.year_month}`)
+          );
+          const remaining = prev.filter(
+            (r) => !updatedKeys.has(`${r.item_id}::${r.year_month}`)
+          );
+          const mappedNew: MonthlyRecord[] = upsertedRecs.map((r) => ({
+            ...(r as MonthlyRecord),
+            expected_snapshot: Number(r.expected_snapshot),
+            actual_amount: Number(r.actual_amount),
+            transactions: insertedTxByRecId.get(r.id) || [],
+          }));
+          return [...remaining, ...mappedNew];
+        });
+      }
+    } else if (preparedRecords.length > 0) {
+      setRecords((prev) => {
+        const updatedKeys = new Set(
+          preparedRecords.map((p) => `${p.itemId}::${p.targetYM}`)
+        );
+        const remaining = prev.filter(
+          (r) => !updatedKeys.has(`${r.item_id}::${r.year_month}`)
+        );
+        const localNew: MonthlyRecord[] = preparedRecords.map((p, idx) => {
+          const recId =
+            p.existingRecId ||
+            `rec-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
+          return {
+            id: recId,
+            household_id: household.id,
+            item_id: p.itemId,
+            year_month: p.targetYM,
+            expected_snapshot: p.expectedSnapshot,
+            actual_amount: p.totalAmount,
+            status: "confirmed",
+            notes: null,
+            confirmed_at: nowIso,
+            transactions: p.keepSubTxs.map((tx, tIdx) => ({
+              id: `tx-${Date.now()}-${idx}-${tIdx}-${Math.random().toString(36).slice(2, 5)}`,
+              household_id: household.id,
+              monthly_record_id: recId,
+              amount: tx.amount,
+              description: tx.description,
+              spent_on: tx.spent_on,
+            })),
+          };
+        });
+        return [...remaining, ...localNew];
+      });
     }
 
     if (rulesAdded) {
       await handleUpdateHousehold({ merchant_rules: newlyCreatedRules });
     }
+
+    setLastImportSnapshot({
+      items: snapshotItems,
+      records: snapshotRecords,
+      merchantRules: snapshotRules,
+      createdItemIds,
+      importedCount: activeRows.length,
+    });
+  };
+
+  // O5: 1-Tap Undo Last Import
+  const handleUndoLastImport = async () => {
+    if (!lastImportSnapshot) return;
+    const snap = lastImportSnapshot;
+    setLastImportSnapshot(null);
+
+    setItems(snap.items);
+    setRecords(snap.records);
+    await handleUpdateHousehold({ merchant_rules: snap.merchantRules });
+
+    if (userId && dbReady && snap.createdItemIds.length > 0) {
+      await supabase
+        .from("budget_items")
+        .delete()
+        .in("id", snap.createdItemIds);
+    }
+  };
+
+  // F4: Update Expected Baseline Amount from Insights Smart Baseline Adjuster
+  const handleUpdateItemExpectedAmount = async (
+    itemId: string,
+    newExpected: number
+  ) => {
+    if (userId && dbReady) {
+      await supabase
+        .from("budget_items")
+        .update({ expected_amount: newExpected })
+        .eq("id", itemId);
+    }
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId ? { ...it, expected_amount: newExpected } : it
+      )
+    );
+  };
+
+  // F4: Copy Previous Month's Confirmed Actuals into Expected Baseline
+  const handleCopyPreviousMonthActuals = async (): Promise<number> => {
+    const prevYM = shiftYearMonth(yearMonth, -1);
+    const prevConfirmed = records.filter(
+      (r) =>
+        r.year_month === prevYM &&
+        r.status === "confirmed" &&
+        r.actual_amount !== null &&
+        r.actual_amount > 0
+    );
+    if (prevConfirmed.length === 0) return 0;
+
+    const updatesMap = new Map<string, number>();
+    for (const r of prevConfirmed) {
+      updatesMap.set(r.item_id, Math.round(Number(r.actual_amount)));
+    }
+
+    if (userId && dbReady) {
+      for (const [id, nextAmt] of updatesMap.entries()) {
+        await supabase
+          .from("budget_items")
+          .update({ expected_amount: nextAmt })
+          .eq("id", id);
+      }
+    }
+
+    setItems((prev) =>
+      prev.map((it) =>
+        updatesMap.has(it.id)
+          ? { ...it, expected_amount: updatesMap.get(it.id)! }
+          : it
+      )
+    );
+
+    return updatesMap.size;
   };
 
   const handleResetPending = async (itemId: string) => {
@@ -1547,6 +1726,76 @@ export default function BudgetAppPage() {
                 </div>
               </div>
             </div>
+
+            {/* D1: Visual "Money Flow" Stacked Ribbon (Inflow -> Expenses + Savings + Net Left) */}
+            {summary.effectiveIncome > 0 && (() => {
+              const inc = summary.effectiveIncome;
+              const expPct = Math.min(100, Math.max(0, Math.round((summary.effectiveExpense / inc) * 100)));
+              const savPct = Math.min(100 - expPct, Math.max(0, Math.round((summary.effectiveSavings / inc) * 100)));
+              const leftPct = Math.max(0, 100 - expPct - savPct);
+              const isDeficit = summary.leftToSpend < 0;
+
+              return (
+                <div className="mt-3.5 pt-3 border-t border-[#ecece9]">
+                  <div className="flex items-center justify-between text-[10px] font-mono text-[#64645e] mb-1.5">
+                    <span className="font-sans font-bold uppercase tracking-wider text-[#282825]">
+                      {locale === "sv" ? "Pengarnas flöde" : "Money Flow"}
+                    </span>
+                    <div className="flex items-center gap-2.5">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-full bg-[#f09236]" />
+                        {locale === "sv" ? "Utgifter" : "Expenses"} {expPct}%
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-full bg-[#c455eb]" />
+                        {locale === "sv" ? "Spar" : "Saved"} {savPct}%
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            isDeficit ? "bg-[#eb5b55]" : "bg-[#529a6a]"
+                          }`}
+                        />
+                        {locale === "sv" ? "Kvar" : "Left"}{" "}
+                        {isDeficit
+                          ? `-${Math.round((Math.abs(summary.leftToSpend) / inc) * 100)}%`
+                          : `${leftPct}%`}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[#ecece9] border border-[#282825]/15 p-0.5 gap-0.5">
+                    {expPct > 0 && (
+                      <div
+                        className="h-full rounded-l-full bg-[#f09236] transition-all"
+                        style={{ width: `${expPct}%` }}
+                        title={`${t.summary.expenses}: ${expPct}%`}
+                      />
+                    )}
+                    {savPct > 0 && (
+                      <div
+                        className="h-full bg-[#c455eb] transition-all"
+                        style={{ width: `${savPct}%` }}
+                        title={`${t.summary.savings}: ${savPct}%`}
+                      />
+                    )}
+                    {leftPct > 0 && !isDeficit && (
+                      <div
+                        className="h-full rounded-r-full bg-[#529a6a] transition-all"
+                        style={{ width: `${leftPct}%` }}
+                        title={`${t.summary.leftToSpend}: ${leftPct}%`}
+                      />
+                    )}
+                    {isDeficit && (
+                      <div
+                        className="h-full rounded-r-full bg-[#eb5b55] transition-all"
+                        style={{ width: "12%" }}
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Smart Filter Pills + Bank Import & Month Close Triggers */}
@@ -1602,6 +1851,40 @@ export default function BudgetAppPage() {
               </button>
             </div>
           </div>
+
+          {/* O5: Undo Last Import Banner */}
+          {lastImportSnapshot && (
+            <div className="flex items-center justify-between gap-2 rounded-2xl border border-[#529a6a] bg-[#e7f4eb] px-3.5 py-2.5 text-xs text-[#282825] shadow-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <CheckCircle2 className="h-4 w-4 text-[#057b40] shrink-0" />
+                <span className="font-semibold truncate">
+                  {locale === "sv"
+                    ? `${lastImportSnapshot.importedCount} transaktioner importerade`
+                    : `${lastImportSnapshot.importedCount} transactions imported`}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleUndoLastImport}
+                  className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-white px-2.5 py-1 text-[11px] font-bold text-[#282825] hover:bg-[#fdeeed] hover:text-[#b81a14] hover:border-[#b81a14] transition"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  <span>
+                    {locale === "sv" ? "Ångra import" : "Undo import"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLastImportSnapshot(null)}
+                  className="rounded-full px-1.5 py-0.5 text-xs font-bold text-[#64645e] hover:text-[#282825]"
+                  aria-label="Dismiss"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Groups & Budget Items List */}
           <div className="space-y-4">
@@ -2319,6 +2602,48 @@ export default function BudgetAppPage() {
                             ? record.notes
                             : null;
 
+                        const currentEffectiveVal =
+                          displayedActual !== null
+                            ? displayedActual
+                            : txSum > 0
+                            ? txSum
+                            : displayedExpected;
+                        const draftKey = `${item.id}::${yearMonth}`;
+                        const draftStr =
+                          inlineIncomeDrafts[draftKey] !== undefined
+                            ? inlineIncomeDrafts[draftKey]
+                            : String(Math.round(currentEffectiveVal));
+                        const parsedDraft = Number(draftStr);
+                        const isDraftDirty =
+                          inlineIncomeDrafts[draftKey] !== undefined &&
+                          !isNaN(parsedDraft) &&
+                          parsedDraft >= 0 &&
+                          (Math.round(parsedDraft) !==
+                            Math.round(currentEffectiveVal) ||
+                            !isConfirmed);
+
+                        const commitInlineAmount = async (
+                          e?: React.MouseEvent | React.KeyboardEvent
+                        ) => {
+                          if (e) e.stopPropagation();
+                          const val =
+                            inlineIncomeDrafts[draftKey] !== undefined
+                              ? Number(inlineIncomeDrafts[draftKey])
+                              : currentEffectiveVal;
+                          if (!isNaN(val) && val >= 0) {
+                            await handleConfirmActual(
+                              item.id,
+                              val,
+                              record?.notes || ""
+                            );
+                            setInlineIncomeDrafts((prev) => {
+                              const next = { ...prev };
+                              delete next[draftKey];
+                              return next;
+                            });
+                          }
+                        };
+
                         return (
                           <div
                             key={item.id}
@@ -2326,7 +2651,10 @@ export default function BudgetAppPage() {
                             role="button"
                             tabIndex={0}
                             onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
+                              if (
+                                (e.key === "Enter" || e.key === " ") &&
+                                (e.target as HTMLElement).tagName !== "INPUT"
+                              ) {
                                 setSelectedItemId(item.id);
                               }
                             }}
@@ -2336,7 +2664,7 @@ export default function BudgetAppPage() {
                                 : ""
                             }`}
                           >
-                            <div className="flex items-start justify-between gap-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2.5">
                               <div className="flex items-start gap-2.5 min-w-0 flex-1">
                                 {/* Inline 1-Tap Quick-Confirm Button */}
                                 <button
@@ -2364,7 +2692,7 @@ export default function BudgetAppPage() {
 
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-1.5">
-                                    <span className="text-sm font-semibold leading-snug break-words text-[#282825]">
+                                    <span className="text-sm font-semibold leading-snug break-words text-[#282825] hover:underline">
                                       {item.name}
                                     </span>
                                     {item.cost_split &&
@@ -2378,6 +2706,31 @@ export default function BudgetAppPage() {
                                   </div>
                                   <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
                                     <span>{coverageLabel}</span>
+                                    <span>
+                                      · {locale === "sv" ? "Budget:" : "Plan:"}{" "}
+                                      {formatCurrency(
+                                        displayedExpected,
+                                        household.currency,
+                                        locale
+                                      )}
+                                    </span>
+                                    {variance !== null &&
+                                      Math.round(variance) !== 0 && (
+                                        <span
+                                          className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
+                                            variance < 0
+                                              ? "bg-[#e7f4eb] text-[#057b40]"
+                                              : "bg-[#fdeee0] text-[#b85d10]"
+                                          }`}
+                                        >
+                                          {variance > 0 ? "+" : ""}
+                                          {formatCurrency(
+                                            variance,
+                                            household.currency,
+                                            locale
+                                          )}
+                                        </span>
+                                      )}
                                     {hasPartialTx && (
                                       <span className="inline-flex items-center gap-1 rounded-full bg-[#fdeee0] px-2 py-0.2 font-sans text-[10px] font-bold text-[#b85d10]">
                                         <Layers className="h-2.5 w-2.5" />
@@ -2402,65 +2755,57 @@ export default function BudgetAppPage() {
                                 </div>
                               </div>
 
-                              {/* Right Side Amounts */}
-                              <div className="shrink-0 text-right">
-                                {displayedActual !== null ? (
-                                  <>
-                                    <div className="font-serif text-lg leading-tight text-[#282825]">
-                                      {formatCurrency(
-                                        displayedActual,
-                                        household.currency,
-                                        locale
-                                      )}
-                                    </div>
-                                    <div className="flex items-center justify-end gap-1 font-mono text-[11px]">
-                                      <span className="text-[#8f8f89] line-through">
-                                        {formatCurrency(
-                                          displayedExpected,
-                                          household.currency,
-                                          locale
-                                        )}
-                                      </span>
-                                      {variance !== null &&
-                                        Math.round(variance) !== 0 && (
-                                          <span
-                                            className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
-                                              variance < 0
-                                                ? "bg-[#e7f4eb] text-[#057b40]"
-                                                : "bg-[#fdeee0] text-[#b85d10]"
-                                            }`}
-                                          >
-                                            {variance > 0 ? "+" : ""}
-                                            {formatCurrency(
-                                              variance,
-                                              household.currency,
-                                              locale
-                                            )}
-                                          </span>
-                                        )}
-                                    </div>
-                                  </>
-                                ) : (
-                                  <>
-                                    <div className="font-serif text-lg leading-tight text-[#282825]">
-                                      {formatCurrency(
-                                        displayedExpected,
-                                        household.currency,
-                                        locale
-                                      )}
-                                    </div>
-                                    <div className="text-[11px] font-medium text-[#057b40]">
-                                      {!isPaymentMonth &&
-                                      viewMode === "cashflow"
-                                        ? t.status.offMonth
-                                        : !isPaymentMonth &&
-                                          viewMode === "accrual"
-                                        ? t.status.offMonthAccrual
-                                        : locale === "sv"
-                                        ? "Tryck för utfall →"
-                                        : "Tap to confirm →"}
-                                    </div>
-                                  </>
+                              {/* D2: Direct Inline Quick-Edit Amount Box for Expense & Savings Items */}
+                              <div
+                                className="flex items-center gap-1.5 shrink-0"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div
+                                  className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 transition ${
+                                    isConfirmed
+                                      ? "border-[#529a6a] bg-[#e7f4eb]/45 focus-within:bg-white focus-within:border-[#282825]"
+                                      : "border-[#c5c5ba] bg-[#f8f8f7] focus-within:bg-white focus-within:border-[#282825]"
+                                  }`}
+                                >
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={draftStr}
+                                    onChange={(e) =>
+                                      setInlineIncomeDrafts((prev) => ({
+                                        ...prev,
+                                        [draftKey]: e.target.value,
+                                      }))
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        commitInlineAmount(e);
+                                      }
+                                    }}
+                                    aria-label={item.name}
+                                    className="w-20 bg-transparent text-right font-serif text-lg leading-none text-[#282825] focus:outline-none"
+                                  />
+                                  <span className="font-mono text-[10px] font-semibold text-[#64645e]">
+                                    {household.currency === "SEK"
+                                      ? "kr"
+                                      : household.currency}
+                                  </span>
+                                </div>
+
+                                {isDraftDirty && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => commitInlineAmount(e)}
+                                    className="inline-flex items-center justify-center rounded-xl bg-[#057b40] p-2 text-white hover:bg-[#046333] transition shadow-2xs"
+                                    title={
+                                      locale === "sv"
+                                        ? "Spara & bekräfta utfall"
+                                        : "Save & confirm actual"
+                                    }
+                                  >
+                                    <Check className="h-4 w-4" />
+                                  </button>
                                 )}
                               </div>
                             </div>
@@ -2575,6 +2920,8 @@ export default function BudgetAppPage() {
           viewMode={viewMode}
           currency={household.currency}
           locale={locale}
+          onUpdateItemExpectedAmount={handleUpdateItemExpectedAmount}
+          onCopyPreviousMonthActuals={handleCopyPreviousMonthActuals}
         />
       )}
 
@@ -2652,12 +2999,13 @@ export default function BudgetAppPage() {
         onMoveGroup={handleMoveGroup}
       />
 
-      {/* Bank / Credit Card CSV & XLSX Import Modal with Smart Merchant Rules */}
+      {/* Bank / Credit Card CSV & XLSX Import Modal with Smart Merchant Rules & O1 Duplicate Guard */}
       <BankImportModal
         open={importModalOpen}
         yearMonth={yearMonth}
         groups={groups}
         items={items}
+        records={records}
         merchantRules={household.merchant_rules || []}
         currency={household.currency}
         locale={locale}

@@ -23,6 +23,7 @@ import {
   BudgetItem,
   Locale,
   MerchantRule,
+  MonthlyRecord,
 } from "@/lib/types";
 import { formatCurrency } from "@/lib/i18n";
 
@@ -45,6 +46,7 @@ interface BankImportModalProps {
   yearMonth: string;
   groups: BudgetGroup[];
   items: BudgetItem[];
+  records?: MonthlyRecord[];
   merchantRules: MerchantRule[];
   currency: string;
   locale: Locale;
@@ -62,6 +64,8 @@ interface RawTransactionRow {
   amount: number; // signed expense/income amount in budget terms (positive = standard for group)
   isIncome: boolean;
   isRefund: boolean;
+  fingerprint: string;
+  sourceFile?: string;
 }
 
 interface MerchantGroupCandidate {
@@ -723,6 +727,7 @@ export function BankImportModal({
   yearMonth,
   groups,
   items,
+  records = [],
   merchantRules,
   currency,
   locale,
@@ -742,6 +747,12 @@ export function BankImportModal({
   const [merchantGroups, setMerchantGroups] = useState<
     MerchantGroupCandidate[]
   >([]);
+  const [accumulatedRawTxs, setAccumulatedRawTxs] = useState<
+    RawTransactionRow[]
+  >([]);
+  const [uploadedFiles, setUploadedFiles] = useState<string[]>([]);
+  const [duplicatesSkippedCount, setDuplicatesSkippedCount] =
+    useState<number>(0);
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
   const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -752,6 +763,37 @@ export function BankImportModal({
   const [showRulesDrawer, setShowRulesDrawer] = useState(false);
   const [newRulePattern, setNewRulePattern] = useState("");
   const [newRuleItemId, setNewRuleItemId] = useState(items[0]?.id || "");
+
+  // Build fingerprint set of already-imported transactions in the database (O1)
+  const existingDbFingerprints = useMemo(() => {
+    const set = new Set<string>();
+    const itemMap = new Map(items.map((i) => [i.id, i.name.toLowerCase().trim()]));
+    for (const rec of records) {
+      const txs = rec.transactions || [];
+      if (txs.length > 0) {
+        const perFileCounts = new Map<string, number>();
+        for (const tx of txs) {
+          const baseKey = `${tx.spent_on}::${tx.description
+            .toLowerCase()
+            .trim()}::${Math.round(Number(tx.amount) * 100)}`;
+          const occ = perFileCounts.get(baseKey) || 0;
+          perFileCounts.set(baseKey, occ + 1);
+          set.add(`${baseKey}::${occ}`);
+          set.add(baseKey);
+        }
+      } else if (rec.status === "confirmed" && rec.actual_amount !== null) {
+        const itName = itemMap.get(rec.item_id);
+        if (itName) {
+          set.add(
+            `MONTH::${rec.year_month}::${itName}::${Math.round(
+              Number(rec.actual_amount) * 100
+            )}`
+          );
+        }
+      }
+    }
+    return set;
+  }, [records, items]);
 
   const availableMonths = useMemo(() => {
     const set = new Set<string>();
@@ -784,140 +826,14 @@ export function BankImportModal({
 
   const defaultItemId = items[0]?.id || "";
 
-  const buildGroupedCandidatesFromColumns = (
-    rows: unknown[][],
-    startRow: number,
-    dCol: number,
-    tCol: number,
-    tCol2: number,
-    aCol: number,
-    creditCardSignMode: boolean
-  ) => {
-    // Check if slash dates in this file are MM/DD/YYYY (like Amex "10/16/2026")
-    let preferMonthFirst = creditCardSignMode;
-    for (let i = startRow; i < Math.min(startRow + 40, rows.length); i++) {
-      const r = rows[i];
-      if (!r) continue;
-      const dStr = String(r[dCol] ?? "").trim();
-      const m = dStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
-      if (m) {
-        const p1 = parseInt(m[1], 10);
-        const p2 = parseInt(m[2], 10);
-        if (p1 <= 12 && p2 > 12) {
-          preferMonthFirst = true;
-          break;
-        }
-        if (p1 > 12 && p2 <= 12) {
-          preferMonthFirst = false;
-          break;
-        }
-      }
-    }
-
-    const rawTxs: RawTransactionRow[] = [];
-    let currentCardholder = "";
-
-    for (let i = startRow; i < rows.length; i++) {
-      const r = rows[i];
-      if (!r || r.length < 2) continue;
-
-      const firstCellText = String(r[0] ?? "").trim();
-      // Stop if we hit Amex's bottom summary block ("Transaktionssammanfattning" / "Aktivitet utifrån kort")
-      if (
-        /^(transaktionssammanfattning|aktivitet utifrån kort|kortmedlem)$/i.test(
-          firstCellText
-        )
-      ) {
-        break;
-      }
-
-      // Detect SEB Kort / SAS Mastercard cardholder section header (e.g. "525412******7076 | Hedestam Maja")
-      if (/^\d{4,6}\*{4,8}\d{3,4}$/.test(firstCellText)) {
-        const holder = String(r[1] ?? "").trim();
-        if (holder) currentCardholder = holder;
-        continue;
-      }
-
-      const rawDate = String(r[dCol] ?? "").trim();
-      const parsedDate = parseStatementDate(rawDate, preferMonthFirst);
-      // Skip metadata/footer/exchange-rate lines that do not have a valid transaction date
-      if (!parsedDate) continue;
-
-      const primaryText = String(r[tCol] ?? "").trim();
-      const secondaryText =
-        tCol2 !== -1 && tCol2 !== tCol
-          ? String(r[tCol2] ?? "").trim()
-          : currentCardholder;
-
-      const { merchantName, detailNote } = buildCleanMerchantName(
-        primaryText,
-        secondaryText
-      );
-
-      const rawAmt = parseNumericAmount(r[aCol]);
-      if (!merchantName || rawAmt === null || rawAmt === 0) continue;
-
-      if (
-        /^(belopp|amount|summa|summa köp\/uttag|totalt|totalt belopp|saldo|specifikation|beskrivning)$/i.test(
-          merchantName
-        )
-      ) {
-        continue;
-      }
-
-      // Sign convention:
-      // - In Bank Account mode (Sparbanken): negative (-751) is an Expense, positive (+27957) is Income
-      // - In Credit Card mode (Amex / SEB Mastercard): positive (+89) is an Expense, negative (-1777.5) is a Refund or Card Bill Payment
-      let isIncome = false;
-      let isRefund = false;
-      let signedExpenseOrIncomeAmt = Math.abs(rawAmt);
-
-      if (creditCardSignMode) {
-        isIncome = false;
-        if (rawAmt < 0) {
-          if (/betalning mottagen|inbetalning/i.test(merchantName)) {
-            signedExpenseOrIncomeAmt = Math.abs(rawAmt);
-          } else {
-            // Credit card refund (e.g. Boozt / Arket / Monthly of Sweden return): subtracts from expense total!
-            isRefund = true;
-            signedExpenseOrIncomeAmt = -Math.abs(rawAmt);
-          }
-        }
-      } else {
-        isIncome = rawAmt > 0;
-        signedExpenseOrIncomeAmt = Math.abs(rawAmt);
-      }
-
-      const txYearMonth = parsedDate.slice(0, 7);
-
-      rawTxs.push({
-        id: `tx-${i}`,
-        date: parsedDate,
-        yearMonth: txYearMonth,
-        merchantName,
-        detailNote,
-        amount: signedExpenseOrIncomeAmt,
-        isIncome,
-        isRefund,
-      });
-    }
-
-    if (rawTxs.length === 0) {
-      setErrorMsg(
-        locale === "sv"
-          ? "Kunde inte hitta några transaktionsrader med dessa kolumnval. Prova att justera kolumnerna nedan."
-          : "Could not find transaction rows with these column selections. Try adjusting the columns below."
-      );
-      setShowColumnMapper(true);
+  const groupRawTransactionsIntoCandidates = (allTxs: RawTransactionRow[]) => {
+    if (allTxs.length === 0) {
       setMerchantGroups([]);
       return;
     }
 
-    setErrorMsg(null);
-
-    // Group transactions by normalized merchantName
     const groupedMap = new Map<string, RawTransactionRow[]>();
-    for (const tx of rawTxs) {
+    for (const tx of allTxs) {
       const normKey = `${tx.isIncome ? "INC" : "EXP"}::${tx.merchantName
         .toLowerCase()
         .replace(/\s+/g, " ")
@@ -983,7 +899,10 @@ export function BankImportModal({
         targetGroupId: matchedItem?.group_id || groupId,
         suggestedCategoryLabel: categoryHint,
         matchedRulePattern: matchedRule?.pattern,
-        rememberRule: Boolean(matchedItem && !matchedRule),
+        // O4: Auto-create smart rules for both matched items and new_monthly items!
+        rememberRule: Boolean(
+          (matchedItem && !matchedRule) || defaultAction === "new_monthly"
+        ),
         rulePattern: extractCleanMerchantKeyword(first.merchantName),
       });
     }
@@ -1001,25 +920,185 @@ export function BankImportModal({
     setSelectedMonths([]);
   };
 
-  const processRawRows = (rows: unknown[][]) => {
-    setErrorMsg(null);
-    const nonEmptyRows = (rows || []).filter(
-      (r) =>
-        Array.isArray(r) &&
-        r.some((cell) => String(cell ?? "").trim() !== "")
+  const extractRawTransactionsFromColumns = (
+    rows: unknown[][],
+    startRow: number,
+    dCol: number,
+    tCol: number,
+    tCol2: number,
+    aCol: number,
+    creditCardSignMode: boolean,
+    sourceFileLabel?: string
+  ): RawTransactionRow[] => {
+    let preferMonthFirst = creditCardSignMode;
+    for (let i = startRow; i < Math.min(startRow + 40, rows.length); i++) {
+      const r = rows[i];
+      if (!r) continue;
+      const dStr = String(r[dCol] ?? "").trim();
+      const m = dStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+      if (m) {
+        const p1 = parseInt(m[1], 10);
+        const p2 = parseInt(m[2], 10);
+        if (p1 <= 12 && p2 > 12) {
+          preferMonthFirst = true;
+          break;
+        }
+        if (p1 > 12 && p2 <= 12) {
+          preferMonthFirst = false;
+          break;
+        }
+      }
+    }
+
+    const rawTxs: RawTransactionRow[] = [];
+    const perFileOccMap = new Map<string, number>();
+    let currentCardholder = "";
+
+    for (let i = startRow; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || r.length < 2) continue;
+
+      const firstCellText = String(r[0] ?? "").trim();
+      if (
+        /^(transaktionssammanfattning|aktivitet utifrån kort|kortmedlem)$/i.test(
+          firstCellText
+        )
+      ) {
+        break;
+      }
+
+      if (/^\d{4,6}\*{4,8}\d{3,4}$/.test(firstCellText)) {
+        const holder = String(r[1] ?? "").trim();
+        if (holder) currentCardholder = holder;
+        continue;
+      }
+
+      const rawDate = String(r[dCol] ?? "").trim();
+      const parsedDate = parseStatementDate(rawDate, preferMonthFirst);
+      if (!parsedDate) continue;
+
+      const primaryText = String(r[tCol] ?? "").trim();
+      const secondaryText =
+        tCol2 !== -1 && tCol2 !== tCol
+          ? String(r[tCol2] ?? "").trim()
+          : currentCardholder;
+
+      const { merchantName, detailNote } = buildCleanMerchantName(
+        primaryText,
+        secondaryText
+      );
+
+      const rawAmt = parseNumericAmount(r[aCol]);
+      if (!merchantName || rawAmt === null || rawAmt === 0) continue;
+
+      if (
+        /^(belopp|amount|summa|summa köp\/uttag|totalt|totalt belopp|saldo|specifikation|beskrivning)$/i.test(
+          merchantName
+        )
+      ) {
+        continue;
+      }
+
+      let isIncome = false;
+      let isRefund = false;
+      let signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+
+      if (creditCardSignMode) {
+        isIncome = false;
+        if (rawAmt < 0) {
+          if (/betalning mottagen|inbetalning/i.test(merchantName)) {
+            signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+          } else {
+            isRefund = true;
+            signedExpenseOrIncomeAmt = -Math.abs(rawAmt);
+          }
+        }
+      } else {
+        isIncome = rawAmt > 0;
+        signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+      }
+
+      const txYearMonth = parsedDate.slice(0, 7);
+      const baseFingerprint = `${parsedDate}::${merchantName
+        .toLowerCase()
+        .trim()}::${Math.round(signedExpenseOrIncomeAmt * 100)}`;
+      const occIdx = perFileOccMap.get(baseFingerprint) || 0;
+      perFileOccMap.set(baseFingerprint, occIdx + 1);
+      const fingerprint = `${baseFingerprint}::${occIdx}`;
+
+      rawTxs.push({
+        id: `tx-${sourceFileLabel || "f"}-${i}`,
+        date: parsedDate,
+        yearMonth: txYearMonth,
+        merchantName,
+        detailNote,
+        amount: signedExpenseOrIncomeAmt,
+        isIncome,
+        isRefund,
+        fingerprint,
+        sourceFile: sourceFileLabel,
+      });
+    }
+
+    return rawTxs;
+  };
+
+  const buildGroupedCandidatesFromColumns = (
+    rows: unknown[][],
+    startRow: number,
+    dCol: number,
+    tCol: number,
+    tCol2: number,
+    aCol: number,
+    creditCardSignMode: boolean
+  ) => {
+    const extracted = extractRawTransactionsFromColumns(
+      rows,
+      startRow,
+      dCol,
+      tCol,
+      tCol2,
+      aCol,
+      creditCardSignMode,
+      fileName || "file"
     );
 
-    if (nonEmptyRows.length === 0) {
+    if (extracted.length === 0) {
       setErrorMsg(
         locale === "sv"
-          ? "Filen verkar vara tom."
-          : "The uploaded file appears to be empty."
+          ? "Kunde inte hitta några transaktionsrader med dessa kolumnval. Prova att justera kolumnerna nedan."
+          : "Could not find transaction rows with these column selections. Try adjusting the columns below."
       );
+      setShowColumnMapper(true);
+      setMerchantGroups([]);
       return;
     }
 
-    setRawGrid(nonEmptyRows);
+    setErrorMsg(null);
 
+    // Filter out any transactions already imported in database (O1)
+    let skippedDupes = 0;
+    const deduplicated = extracted.filter((tx) => {
+      const monthKey = `MONTH::${tx.yearMonth}::${tx.merchantName
+        .toLowerCase()
+        .trim()}::${Math.round(tx.amount * 100)}`;
+      if (
+        existingDbFingerprints.has(tx.fingerprint) ||
+        existingDbFingerprints.has(monthKey)
+      ) {
+        skippedDupes++;
+        return false;
+      }
+      return true;
+    });
+
+    setDuplicatesSkippedCount(skippedDupes);
+    const finalTxs = deduplicated.length > 0 ? deduplicated : extracted;
+    setAccumulatedRawTxs(finalTxs);
+    groupRawTransactionsIntoCandidates(finalTxs);
+  };
+
+  const detectColumnsForGrid = (nonEmptyRows: unknown[][]) => {
     let detectedHeaderRow = -1;
     let dCol = 0;
     let tCol = 1;
@@ -1027,7 +1106,6 @@ export function BankImportModal({
     let aCol = 2;
     let detectedCreditCard = false;
 
-    // Check top metadata lines for Amex / SEB Kort / SAS Mastercard / Credit card indicators
     for (let r = 0; r < Math.min(25, nonEmptyRows.length); r++) {
       const joined = nonEmptyRows[r].map((c) => String(c ?? "")).join(" ");
       if (
@@ -1085,8 +1163,6 @@ export function BankImportModal({
           )
       );
 
-      // In Amex, "Beskrivning" is col 1 and "Referens" is col 11 ("AT2628...").
-      // In Sparbanken, "Referens" is col 4 ("LF MOTOR") and "Beskrivning" is col 5 ("Kortköp").
       let primaryTextIdx = descIdx !== -1 ? descIdx : refIdx;
       let secondaryTextIdx = -1;
 
@@ -1109,6 +1185,45 @@ export function BankImportModal({
     }
 
     const startRow = detectedHeaderRow !== -1 ? detectedHeaderRow + 1 : 0;
+    return {
+      detectedHeaderRow,
+      startRow,
+      dCol,
+      tCol,
+      tCol2,
+      aCol,
+      detectedCreditCard,
+    };
+  };
+
+  const processRawRows = (rows: unknown[][]) => {
+    setErrorMsg(null);
+    const nonEmptyRows = (rows || []).filter(
+      (r) =>
+        Array.isArray(r) &&
+        r.some((cell) => String(cell ?? "").trim() !== "")
+    );
+
+    if (nonEmptyRows.length === 0) {
+      setErrorMsg(
+        locale === "sv"
+          ? "Filen verkar vara tom."
+          : "The uploaded file appears to be empty."
+      );
+      return;
+    }
+
+    setRawGrid(nonEmptyRows);
+    const {
+      detectedHeaderRow,
+      startRow,
+      dCol,
+      tCol,
+      tCol2,
+      aCol,
+      detectedCreditCard,
+    } = detectColumnsForGrid(nonEmptyRows);
+
     setHeaderRowIdx(Math.max(0, detectedHeaderRow));
     setDateColIdx(dCol);
     setDescColIdx(tCol);
@@ -1127,48 +1242,150 @@ export function BankImportModal({
     );
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setFileName(file.name);
+  const parseSingleFileToGrid = async (file: File): Promise<unknown[][]> => {
+    const buffer = await file.arrayBuffer();
+    const lowerName = file.name.toLowerCase();
+
+    if (lowerName.endsWith(".csv") || lowerName.endsWith(".txt")) {
+      let text = new TextDecoder("utf-8").decode(buffer);
+      if (text.includes("\uFFFD")) {
+        text = new TextDecoder("iso-8859-1").decode(buffer);
+      }
+      return parseCsvTextToRows(text);
+    }
+
+    const workbook = XLSX.read(buffer, { type: "array", raw: false });
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+    ensureFullWorksheetRange(worksheet);
+
+    return XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
+      header: 1,
+      defval: "",
+      blankrows: false,
+    });
+  };
+
+  // F5 + O1: Multi-File Upload & Cross-File + Database Overlap Deduplication!
+  const handleFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    appendToExisting = false
+  ) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const filesArray = Array.from(fileList);
     setErrorMsg(null);
 
     try {
-      const buffer = await file.arrayBuffer();
-      const lowerName = file.name.toLowerCase();
-
-      if (lowerName.endsWith(".csv") || lowerName.endsWith(".txt")) {
-        let text = new TextDecoder("utf-8").decode(buffer);
-        if (text.includes("\uFFFD")) {
-          text = new TextDecoder("iso-8859-1").decode(buffer);
-        }
-        const csvRows = parseCsvTextToRows(text);
-        processRawRows(csvRows);
+      if (filesArray.length === 1 && !appendToExisting) {
+        const file = filesArray[0];
+        setFileName(file.name);
+        setUploadedFiles([file.name]);
+        const rows = await parseSingleFileToGrid(file);
+        processRawRows(rows);
+        e.target.value = "";
         return;
       }
 
-      const workbook = XLSX.read(buffer, { type: "array", raw: false });
-      const firstSheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[firstSheetName];
-      ensureFullWorksheetRange(worksheet);
+      // Multi-file merge or append mode
+      const seenFingerprints = new Set<string>();
+      const combinedTxs: RawTransactionRow[] = [];
+      let totalDuplicatesRemoved = 0;
 
-      const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
-        header: 1,
-        defval: "",
-        blankrows: false,
-      });
-      processRawRows(rows);
+      if (appendToExisting && accumulatedRawTxs.length > 0) {
+        for (const tx of accumulatedRawTxs) {
+          seenFingerprints.add(tx.fingerprint);
+          combinedTxs.push(tx);
+        }
+      }
+
+      const nextFileNames = appendToExisting ? [...uploadedFiles] : [];
+
+      for (const file of filesArray) {
+        if (!nextFileNames.includes(file.name)) {
+          nextFileNames.push(file.name);
+        }
+        const grid = await parseSingleFileToGrid(file);
+        const nonEmptyRows = (grid || []).filter(
+          (r) =>
+            Array.isArray(r) &&
+            r.some((cell) => String(cell ?? "").trim() !== "")
+        );
+        if (nonEmptyRows.length === 0) continue;
+
+        const {
+          detectedHeaderRow,
+          startRow,
+          dCol,
+          tCol,
+          tCol2,
+          aCol,
+          detectedCreditCard,
+        } = detectColumnsForGrid(nonEmptyRows);
+
+        setRawGrid(nonEmptyRows);
+        setHeaderRowIdx(Math.max(0, detectedHeaderRow));
+        setDateColIdx(dCol);
+        setDescColIdx(tCol);
+        setSecondaryDescColIdx(tCol2);
+        setAmountColIdx(aCol);
+        setIsCreditCardMode(detectedCreditCard);
+
+        const fileTxs = extractRawTransactionsFromColumns(
+          nonEmptyRows,
+          startRow,
+          dCol,
+          tCol,
+          tCol2,
+          aCol,
+          detectedCreditCard,
+          file.name
+        );
+
+        for (const tx of fileTxs) {
+          const monthKey = `MONTH::${tx.yearMonth}::${tx.merchantName
+            .toLowerCase()
+            .trim()}::${Math.round(tx.amount * 100)}`;
+
+          // Stage 1: Cross-file overlap deduplication (same date + merchant + amount + per-file occurrence)
+          if (seenFingerprints.has(tx.fingerprint)) {
+            totalDuplicatesRemoved++;
+            continue;
+          }
+          // Stage 2: Already-imported database deduplication
+          if (
+            existingDbFingerprints.has(tx.fingerprint) ||
+            existingDbFingerprints.has(monthKey)
+          ) {
+            totalDuplicatesRemoved++;
+            continue;
+          }
+
+          seenFingerprints.add(tx.fingerprint);
+          combinedTxs.push(tx);
+        }
+      }
+
+      setUploadedFiles(nextFileNames);
+      setFileName(nextFileNames.join(" + "));
+      setDuplicatesSkippedCount(
+        (prev) => (appendToExisting ? prev : 0) + totalDuplicatesRemoved
+      );
+      setAccumulatedRawTxs(combinedTxs);
+      groupRawTransactionsIntoCandidates(combinedTxs);
+      e.target.value = "";
     } catch {
       setErrorMsg(
         locale === "sv"
-          ? "Kunde inte läsa filen. Prova en .xlsx eller .csv-fil."
-          : "Could not parse file. Please upload a valid .xlsx or .csv file."
+          ? "Kunde inte läsa filen/filerna. Prova .xlsx eller .csv."
+          : "Could not parse file(s). Please upload valid .xlsx or .csv files."
       );
     }
   };
 
   const handleLoadAmexSample = () => {
     setFileName("SAS_Amex_Premium_2026.csv");
+    setUploadedFiles(["SAS_Amex_Premium_2026.csv"]);
     const sampleCsv = `Transaktionsspecifikationer,"SAS Amex Premium / 01 Jan, 2026 till 31 Dec, 2026"
 Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på ditt kontoutdrag som,Adress,Ort,Postnummer,Land,Referens,Kategori
 10/16/2026,DOKLAND VIA STRIPE      STOCKHOLM,A C HEDESTAM,-52009,89,,DOKLAND,"SKEPPARGATAN 65\nSTOCKHOLM",,114 59,SWEDEN,AT262890026000010091837,Miscellaneous-Other
@@ -1434,29 +1651,68 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
           )}
         </div>
 
-        {/* Upload Dropzone */}
+        {/* Upload Dropzone (F5 Multi-File + O1 Duplicate Guard) */}
         <div className="mt-3 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[#282825]/40 bg-white p-4 text-center">
           <FileSpreadsheet className="h-6 w-6 text-[#057b40] mb-1.5" />
-          <p className="text-xs font-semibold text-[#282825] break-all">
-            {fileName
-              ? fileName
+          <p className="text-xs font-semibold text-[#282825] break-words">
+            {uploadedFiles.length > 0
+              ? locale === "sv"
+                ? `${uploadedFiles.length} fil(er) inlästa`
+                : `${uploadedFiles.length} file(s) loaded`
               : locale === "sv"
-              ? "Välj en CSV- eller Excel-fil (.csv / .xlsx) från bank eller Amex"
-              : "Choose a CSV or Excel statement file (.csv / .xlsx)"}
+              ? "Välj en eller flera CSV-/Excel-filer samtidigt (Bank, Amex, Mastercard)"
+              : "Select one or multiple CSV/Excel files at once (Bank, Amex, Mastercard)"}
           </p>
+
+          {uploadedFiles.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1">
+              {uploadedFiles.map((fn) => (
+                <span
+                  key={fn}
+                  className="inline-flex items-center gap-1 rounded-full border border-[#b5e3c4] bg-[#e7f4eb] px-2.5 py-0.5 font-mono text-[10px] font-bold text-[#057b40]"
+                >
+                  <Check className="h-2.5 w-2.5" />
+                  <span>{fn}</span>
+                </span>
+              ))}
+            </div>
+          )}
+
           <div className="mt-2.5 flex flex-wrap items-center justify-center gap-2">
             <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-[#0c0d0d] px-4 py-2 text-xs font-semibold text-white hover:bg-[#282825]">
               <Upload className="h-3.5 w-3.5" />
               <span>
-                {locale === "sv" ? "Välj fil (.csv / .xlsx)" : "Select file"}
+                {locale === "sv"
+                  ? "Välj fil(er) (.csv / .xlsx)"
+                  : "Select file(s)"}
               </span>
               <input
                 type="file"
+                multiple
                 accept=".csv,.xlsx,.xls,.txt"
-                onChange={handleFileChange}
+                onChange={(e) => handleFileChange(e, false)}
                 className="hidden"
               />
             </label>
+
+            {merchantGroups.length > 0 && (
+              <label className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-[#282825] bg-[#e1edfe] px-3.5 py-2 text-xs font-semibold text-[#2173be] hover:bg-[#b8d5ff]">
+                <Plus className="h-3.5 w-3.5" />
+                <span>
+                  {locale === "sv"
+                    ? "Lägg till fler filer"
+                    : "Add more files"}
+                </span>
+                <input
+                  type="file"
+                  multiple
+                  accept=".csv,.xlsx,.xls,.txt"
+                  onChange={(e) => handleFileChange(e, true)}
+                  className="hidden"
+                />
+              </label>
+            )}
+
             <button
               type="button"
               onClick={handleLoadAmexSample}
@@ -1469,6 +1725,18 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
             </button>
           </div>
         </div>
+
+        {/* O1 Duplicate Guard Banner */}
+        {duplicatesSkippedCount > 0 && (
+          <div className="mt-2.5 flex items-center gap-2 rounded-2xl border border-[#529a6a] bg-[#e7f4eb] px-3.5 py-2 text-xs font-semibold text-[#057b40]">
+            <Check className="h-4 w-4 shrink-0" />
+            <span>
+              {locale === "sv"
+                ? `Dubblettskydd aktivt: ${duplicatesSkippedCount} överlappande eller redan importerade köp filtrerades bort automatiskt.`
+                : `Duplicate guard: ${duplicatesSkippedCount} overlapping or already-imported transactions were automatically filtered out.`}
+            </span>
+          </div>
+        )}
 
         {/* Statement Type & Column Mapping Bar */}
         {rawGrid.length > 0 && headerLabels.length > 1 && (
@@ -1911,6 +2179,43 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                         </select>
                       )}
                     </div>
+
+                    {/* O4: Auto-create Smart Merchant Rule toggle for new_monthly & existing_item */}
+                    {(mg.actionType === "new_monthly" ||
+                      mg.actionType === "existing_item") && (
+                      <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-[#64645e]">
+                        <label className="inline-flex cursor-pointer items-center gap-1.5">
+                          <input
+                            type="checkbox"
+                            checked={mg.rememberRule}
+                            onChange={(e) =>
+                              updateMerchantGroup(mg.merchantKey, {
+                                rememberRule: e.target.checked,
+                              })
+                            }
+                            className="h-3.5 w-3.5 rounded accent-[#7a2899]"
+                          />
+                          <Zap className="h-3 w-3 text-[#7a2899]" />
+                          <span className="font-medium text-[#282825]">
+                            {locale === "sv"
+                              ? "Spara smart regel för framtida importer:"
+                              : "Auto-save rule for future imports:"}
+                          </span>
+                        </label>
+                        {mg.rememberRule && (
+                          <input
+                            type="text"
+                            value={mg.rulePattern}
+                            onChange={(e) =>
+                              updateMerchantGroup(mg.merchantKey, {
+                                rulePattern: e.target.value,
+                              })
+                            }
+                            className="w-28 rounded-lg border border-[#edc6fb] bg-[#f6e6fc]/60 px-2 py-0.5 font-mono text-[10px] font-bold text-[#7a2899] focus:outline-none"
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
