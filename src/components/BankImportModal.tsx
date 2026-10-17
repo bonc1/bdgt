@@ -687,7 +687,7 @@ export function BankImportModal({
     MerchantGroupCandidate[]
   >([]);
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
-  const [monthScope, setMonthScope] = useState<"all" | string>("all");
+  const [selectedMonths, setSelectedMonths] = useState<string[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -706,6 +706,23 @@ export function BankImportModal({
     }
     return Array.from(set).sort().reverse();
   }, [merchantGroups]);
+
+  const isAllMonthsSelected =
+    selectedMonths.length === 0 ||
+    selectedMonths.length === availableMonths.length;
+
+  const toggleMonthSelection = (ym: string) => {
+    setSelectedMonths((prev) => {
+      if (prev.length === 0) {
+        return [ym];
+      }
+      if (prev.includes(ym)) {
+        const next = prev.filter((m) => m !== ym);
+        return next;
+      }
+      return [...prev, ym];
+    });
+  };
 
   if (!open) return null;
 
@@ -911,7 +928,7 @@ export function BankImportModal({
     });
 
     setMerchantGroups(groupedCandidates);
-    setMonthScope("all");
+    setSelectedMonths([]);
   };
 
   const processRawRows = (rows: unknown[][]) => {
@@ -1125,10 +1142,9 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
 
   const visibleMerchantGroups = merchantGroups
     .map((mg) => {
-      const filteredTxs =
-        monthScope === "all"
-          ? mg.transactions
-          : mg.transactions.filter((tx) => tx.yearMonth === monthScope);
+      const filteredTxs = isAllMonthsSelected
+        ? mg.transactions
+        : mg.transactions.filter((tx) => selectedMonths.includes(tx.yearMonth));
       return {
         ...mg,
         filteredTxs,
@@ -1534,42 +1550,56 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
           <div className="mt-4 space-y-3">
             {availableMonths.length > 1 && (
               <div className="rounded-2xl border border-[#c5c5ba] bg-white p-2.5">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#64645e] mb-1.5">
-                  <Calendar className="h-3.5 w-3.5 text-[#057b40]" />
-                  <span>
-                    {locale === "sv"
-                      ? `Filen sträcker sig över ${availableMonths.length} månader — välj urval:`
-                      : `Statement spans ${availableMonths.length} months — choose scope:`}
-                  </span>
+                <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] font-semibold text-[#64645e] mb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <Calendar className="h-3.5 w-3.5 text-[#057b40]" />
+                    <span>
+                      {locale === "sv"
+                        ? `Filen har ${availableMonths.length} månader — välj en eller flera:`
+                        : `Statement has ${availableMonths.length} months — select one or more:`}
+                    </span>
+                  </div>
+                  {!isAllMonthsSelected && (
+                    <span className="rounded-full bg-[#e7f4eb] px-2 py-0.5 text-[10px] font-bold text-[#057b40]">
+                      {locale === "sv"
+                        ? `${selectedMonths.length} av ${availableMonths.length} valda`
+                        : `${selectedMonths.length} of ${availableMonths.length} selected`}
+                    </span>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   <button
                     type="button"
-                    onClick={() => setMonthScope("all")}
+                    onClick={() => setSelectedMonths([])}
                     className={`rounded-full px-3 py-1 text-[11px] font-semibold border transition ${
-                      monthScope === "all"
+                      isAllMonthsSelected
                         ? "border-[#282825] bg-[#0c0d0d] text-white"
-                        : "border-[#c5c5ba] bg-[#f8f8f7] text-[#282825]"
+                        : "border-[#c5c5ba] bg-[#f8f8f7] text-[#282825] hover:border-[#282825]"
                     }`}
                   >
                     {locale === "sv"
                       ? `Alla månader (${availableMonths[availableMonths.length - 1]} – ${availableMonths[0]})`
                       : `All months (${availableMonths.length})`}
                   </button>
-                  {availableMonths.map((ym) => (
-                    <button
-                      key={ym}
-                      type="button"
-                      onClick={() => setMonthScope(ym)}
-                      className={`rounded-full px-2.5 py-1 font-mono text-[11px] font-semibold border transition ${
-                        monthScope === ym
-                          ? "border-[#282825] bg-[#0c0d0d] text-white"
-                          : "border-[#c5c5ba] bg-[#f8f8f7] text-[#282825]"
-                      }`}
-                    >
-                      {ym}
-                    </button>
-                  ))}
+                  {availableMonths.map((ym) => {
+                    const isMonthPicked =
+                      !isAllMonthsSelected && selectedMonths.includes(ym);
+                    return (
+                      <button
+                        key={ym}
+                        type="button"
+                        onClick={() => toggleMonthSelection(ym)}
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-mono text-[11px] font-semibold border transition ${
+                          isMonthPicked
+                            ? "border-[#282825] bg-[#0c0d0d] text-white"
+                            : "border-[#c5c5ba] bg-[#f8f8f7] text-[#282825] hover:border-[#282825]"
+                        }`}
+                      >
+                        {isMonthPicked && <Check className="h-3 w-3" />}
+                        <span>{ym}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1592,8 +1622,20 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                 const txCount = mg.filteredTxs.length;
                 const filteredSum = Math.max(
                   0,
-                  mg.filteredTxs.reduce((s, t) => s + t.amount, 0)
+                  Math.round(
+                    mg.filteredTxs.reduce((s, t) => s + t.amount, 0) * 100
+                  ) / 100
                 );
+                const filteredDistinctMonths = Array.from(
+                  new Set(mg.filteredTxs.map((t) => t.yearMonth))
+                );
+                const filteredAvg = Math.max(
+                  0,
+                  Math.round(
+                    filteredSum / Math.max(1, filteredDistinctMonths.length)
+                  )
+                );
+                const isMultiMonthFiltered = filteredDistinctMonths.length > 1;
                 const isRecurringGroup = mg.distinctMonths.length >= 2;
 
                 return (
@@ -1619,18 +1661,15 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                         >
                           {mg.isIncome ? "+" : ""}
                           {formatCurrency(
-                            monthScope === "all" && txCount > 1
-                              ? mg.avgAmount
-                              : filteredSum,
+                            isMultiMonthFiltered ? filteredAvg : filteredSum,
                             currency,
                             locale
                           )}
-                          {monthScope === "all" &&
-                            mg.distinctMonths.length > 1 && (
-                              <span className="font-sans text-[10px] font-normal text-[#64645e]">
-                                /{locale === "sv" ? "mån" : "mo"}
-                              </span>
-                            )}
+                          {isMultiMonthFiltered && (
+                            <span className="font-sans text-[10px] font-normal text-[#64645e]">
+                              /{locale === "sv" ? "mån" : "mo"}
+                            </span>
+                          )}
                         </div>
                         {txCount > 1 && (
                           <div className="mt-0.5 font-mono text-[10px] text-[#64645e]">
@@ -1657,8 +1696,8 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                         <span className="inline-flex items-center gap-0.5 rounded-full bg-[#e1edfe] px-2 py-0.5 text-[10px] font-bold text-[#2173be]">
                           <Repeat className="h-2.5 w-2.5" />
                           {locale === "sv"
-                            ? `${mg.distinctMonths.length} mån`
-                            : `${mg.distinctMonths.length} mos`}
+                            ? `${filteredDistinctMonths.length} mån`
+                            : `${filteredDistinctMonths.length} mos`}
                         </span>
                       )}
 
