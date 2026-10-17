@@ -400,11 +400,11 @@ export function InsightsView({
       </div>
 
       {/* D5: Editorial "Månadsrapport / Monthly Receipt" Scorecard */}
-      <div className="rounded-3xl border-2 border-[#282825] bg-[#fdfdfc] p-5 shadow-editorial space-y-4">
+      <div className="rounded-3xl border-2 border-[#282825] bg-white p-5 shadow-editorial space-y-4">
         <div className="flex items-start justify-between gap-2 border-b border-dashed border-[#c5c5ba] pb-3">
           <div>
             <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-[#64645e]">
-              <ReceiptText className="h-3.5 w-3.5 text-[#057b40]" />
+              <ReceiptText className="h-3.5 w-3.5 text-[#282825]" />
               <span>
                 {locale === "sv"
                   ? "Redaktionellt månadskvitto"
@@ -416,11 +416,11 @@ export function InsightsView({
             </h3>
           </div>
 
-          <div className="rounded-2xl bg-[#e7f4eb] border border-[#529a6a] px-3 py-1.5 text-right">
-            <div className="text-[10px] font-bold uppercase text-[#057b40]">
+          <div className="rounded-2xl bg-[#e7f4eb] border border-[#282825]/30 px-3 py-1.5 text-right">
+            <div className="text-[10px] font-bold uppercase text-[#282825]">
               {locale === "sv" ? "Sparkvot" : "Savings Rate"}
             </div>
-            <div className="font-serif text-xl leading-none text-[#057b40]">
+            <div className="font-serif text-xl leading-none text-[#282825]">
               {scorecard.savingsRatePct}%
             </div>
           </div>
@@ -428,29 +428,35 @@ export function InsightsView({
 
         {/* Receipt Key Figures */}
         <div className="grid grid-cols-3 gap-2 font-mono text-xs">
-          <div className="rounded-2xl bg-[#f4f4f2] p-2.5">
-            <div className="text-[10px] text-[#64645e]">
+          <div className="rounded-2xl bg-[#e7f4eb] border border-[#b5e3c4] p-2.5">
+            <div className="text-[10px] font-semibold text-[#282825]/80">
               {locale === "sv" ? "Inflöde" : "Inflow"}
             </div>
-            <div className="mt-0.5 font-bold text-[#057b40]">
+            <div className="mt-0.5 font-bold text-[#282825]">
               +{formatCurrency(scorecard.totalIncome, currency, locale)}
             </div>
           </div>
-          <div className="rounded-2xl bg-[#f4f4f2] p-2.5">
-            <div className="text-[10px] text-[#64645e]">
+          <div className="rounded-2xl bg-[#fdeee0] border border-[#faca9e] p-2.5">
+            <div className="text-[10px] font-semibold text-[#282825]/80">
               {locale === "sv" ? "Utgifter" : "Outflow"}
             </div>
-            <div className="mt-0.5 font-bold text-[#b85d10]">
+            <div className="mt-0.5 font-bold text-[#282825]">
               -{formatCurrency(scorecard.totalExpenses, currency, locale)}
             </div>
           </div>
-          <div className="rounded-2xl bg-[#f4f4f2] p-2.5">
-            <div className="text-[10px] text-[#64645e]">
+          <div
+            className={`rounded-2xl p-2.5 border ${
+              scorecard.netLeft >= 0
+                ? "bg-[#e7f4eb] border-[#b5e3c4]"
+                : "bg-[#fdeeed] border-[#eb5b55]"
+            }`}
+          >
+            <div className="text-[10px] font-semibold text-[#282825]/80">
               {locale === "sv" ? "Netto kvar" : "Net Left"}
             </div>
             <div
               className={`mt-0.5 font-bold ${
-                scorecard.netLeft >= 0 ? "text-[#057b40]" : "text-[#b81a14]"
+                scorecard.netLeft >= 0 ? "text-[#282825]" : "text-[#b81a14]"
               }`}
             >
               {formatCurrency(scorecard.netLeft, currency, locale)}
@@ -644,7 +650,7 @@ export function InsightsView({
                 setCopyFeedbackCount(count);
                 setTimeout(() => setCopyFeedbackCount(null), 3000);
               }}
-              className="inline-flex items-center gap-1.5 rounded-full border border-[#282825] bg-[#e7f4eb] px-3 py-1.5 text-xs font-semibold text-[#057b40] hover:bg-[#d0ebd8] transition"
+              className="inline-flex items-center gap-1.5 rounded-full border border-[#282825] bg-[#e7f4eb] px-3 py-1.5 text-xs font-semibold text-[#282825] hover:bg-[#b5e3c4] transition"
             >
               <Copy className="h-3.5 w-3.5" />
               <span>
@@ -676,7 +682,7 @@ export function InsightsView({
                       await onUpdateItemExpectedAmount(s.item.id, s.avgActual);
                     }
                   }}
-                  className="text-[#057b40] font-bold hover:underline"
+                  className="text-[#282825] font-bold underline decoration-[#529a6a] hover:opacity-80"
                 >
                   {locale === "sv"
                     ? `Uppdatera alla (${baselineSuggestions.length})`
@@ -724,7 +730,7 @@ export function InsightsView({
             </div>
           </div>
         ) : (
-          <div className="rounded-2xl bg-[#e7f4eb] p-3 text-xs font-medium text-[#057b40]">
+          <div className="rounded-2xl bg-[#e7f4eb] border border-[#b5e3c4] p-3 text-xs font-semibold text-[#282825]">
             {locale === "sv"
               ? "Er budget ligger redan i linje med ert faktiska snittutfall!"
               : "Your baseline budget is already aligned with your historical averages!"}

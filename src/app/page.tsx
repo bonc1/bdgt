@@ -1654,17 +1654,17 @@ export default function BudgetAppPage() {
               <button
                 type="button"
                 onClick={() => setMonthCloseModalOpen(true)}
-                className="rounded-2xl border border-[#282825]/25 bg-[#e7f4eb] px-3.5 py-2.5 text-right hover:border-[#282825] transition"
+                className="rounded-2xl border border-[#282825]/35 bg-[#e7f4eb] px-3.5 py-2.5 text-right hover:border-[#282825] transition"
               >
-                <div className="text-[11px] font-semibold text-[#057b40] flex items-center justify-end gap-1">
-                  <CheckCheck className="h-3.5 w-3.5" />
+                <div className="text-[11px] font-bold text-[#282825] flex items-center justify-end gap-1">
+                  <CheckCheck className="h-3.5 w-3.5 text-[#282825]" />
                   <span>{t.summary.confirmedProgress}</span>
                 </div>
                 <div className="mt-0.5 font-serif text-xl text-[#282825]">
                   {summary.confirmedCount} {t.summary.of}{" "}
                   {summary.dueItemsCount} {t.summary.done}
                 </div>
-                <div className="mt-1.5 h-1.5 w-24 overflow-hidden rounded-full bg-white/80 border border-[#057b40]/20">
+                <div className="mt-1.5 h-1.5 w-24 overflow-hidden rounded-full bg-white border border-[#282825]/20">
                   <div
                     className="h-full rounded-full bg-[#529a6a] transition-all"
                     style={{
@@ -1685,8 +1685,8 @@ export default function BudgetAppPage() {
             {/* 3 Highlighter Summary Pillars: Income, Expenses, Savings */}
             <div className="mt-4 grid grid-cols-3 gap-2 pt-3.5 border-t border-[#ecece9]">
               <div className="rounded-2xl bg-[#e7f4eb] p-2.5 border border-[#b5e3c4]">
-                <div className="flex items-center gap-1 text-[11px] font-semibold text-[#057b40]">
-                  <ArrowUpRight className="h-3.5 w-3.5" />
+                <div className="flex items-center gap-1 text-[11px] font-bold text-[#282825]">
+                  <ArrowUpRight className="h-3.5 w-3.5 text-[#282825]" />
                   <span>{t.summary.income}</span>
                 </div>
                 <div className="mt-1 font-serif text-lg text-[#282825] leading-tight">
@@ -1937,12 +1937,12 @@ export default function BudgetAppPage() {
                 return (
                   <section
                     key={group.id}
-                    className="rounded-3xl border-2 border-[#529a6a] bg-[#f4fbf6] overflow-hidden shadow-editorial"
+                    className="rounded-3xl border-2 border-[#282825] bg-white overflow-hidden shadow-editorial"
                   >
                     {/* Dedicated Top Inkomster / Paycheck Banner Header */}
                     <div
                       className={`bg-[#e7f4eb] ${
-                        isCollapsed ? "" : "border-b border-[#b5e3c4]"
+                        isCollapsed ? "" : "border-b border-[#282825]/20"
                       } px-4 pt-3.5 pb-3`}
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -1956,8 +1956,8 @@ export default function BudgetAppPage() {
                           }
                           className="flex flex-col text-left hover:opacity-85 transition min-w-0 flex-1"
                         >
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold tracking-wider uppercase text-[#057b40]">
-                            <ArrowUpRight className="h-3.5 w-3.5" />
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold tracking-wider uppercase text-[#282825]">
+                            <span className="h-2 w-2 rounded-full bg-[#529a6a]" />
                             <span>
                               {locale === "sv"
                                 ? "Månadens inkomster & utbetalningar"
@@ -1975,7 +1975,7 @@ export default function BudgetAppPage() {
                         </button>
 
                         <div className="text-right shrink-0">
-                          <div className="font-serif text-2xl leading-none text-[#057b40]">
+                          <div className="font-serif text-2xl leading-none text-[#282825]">
                             +
                             {formatCurrency(
                               groupEffective,
@@ -1996,7 +1996,7 @@ export default function BudgetAppPage() {
                               <span
                                 className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
                                   groupVariance > 0
-                                    ? "bg-white text-[#057b40] border border-[#529a6a]"
+                                    ? "bg-white text-[#282825] border border-[#282825]/30"
                                     : "bg-[#fdeeed] text-[#b81a14]"
                                 }`}
                               >
@@ -2014,11 +2014,11 @@ export default function BudgetAppPage() {
 
                       <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5 text-[11px]">
-                          <span className="rounded-full bg-white/90 px-2.5 py-0.5 font-mono font-bold text-[#057b40] border border-[#529a6a]/30">
+                          <span className="rounded-full bg-white px-2.5 py-0.5 font-mono font-bold text-[#282825] border border-[#282825]/25">
                             {confirmedInGroup.length}/{dueInGroup.length}{" "}
                             {locale === "sv" ? "utbetalda" : "received"}
                           </span>
-                          <span className="text-[#64645e]">
+                          <span className="text-[#282825]/80 font-medium">
                             {locale === "sv"
                               ? "Skriv belopp direkt i rutan nedan"
                               : "Edit payout amounts directly below"}
@@ -2032,7 +2032,7 @@ export default function BudgetAppPage() {
                               setEditingGroup(group);
                               setGroupModalOpen(true);
                             }}
-                            className="rounded-full border border-[#282825]/20 bg-white/80 p-1.5 text-[#64645e] hover:bg-white hover:text-[#282825] transition"
+                            className="rounded-full border border-[#282825]/25 bg-white p-1.5 text-[#282825] hover:bg-[#f8f8f7] transition"
                             title={
                               locale === "sv" ? "Redigera grupp" : "Edit group"
                             }
@@ -2046,7 +2046,7 @@ export default function BudgetAppPage() {
                                 isQuickAddOpen ? null : group.id
                               )
                             }
-                            className="inline-flex items-center gap-1 rounded-full border border-[#057b40] bg-[#057b40] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#046333] transition"
+                            className="inline-flex items-center gap-1 rounded-full bg-[#0c0d0d] px-3 py-1 text-[11px] font-semibold text-white hover:bg-[#282825] transition"
                           >
                             <Plus className="h-3.5 w-3.5" />
                             <span>
@@ -2059,7 +2059,7 @@ export default function BudgetAppPage() {
 
                     {/* Inline Paycheck Cards */}
                     {!isCollapsed && (
-                      <div className="p-3 space-y-2.5">
+                      <div className="p-3 space-y-2.5 bg-white">
                         {groupItems.map((c) => {
                           const {
                             item,
@@ -2111,8 +2111,8 @@ export default function BudgetAppPage() {
                               key={item.id}
                               className={`rounded-2xl border p-3 transition ${
                                 isConfirmed
-                                  ? "border-[#529a6a] bg-white shadow-2xs"
-                                  : "border-[#c5c5ba] bg-white/90"
+                                  ? "border-[#282825] bg-[#f8f8f7]"
+                                  : "border-[#c5c5ba] bg-white"
                               }`}
                             >
                               <div className="flex flex-wrap items-center justify-between gap-2.5">
@@ -2135,9 +2135,9 @@ export default function BudgetAppPage() {
                                     }
                                   >
                                     {isConfirmed ? (
-                                      <CheckCircle2 className="h-5 w-5 text-[#057b40]" />
+                                      <CheckCircle2 className="h-5 w-5 text-[#282825]" />
                                     ) : (
-                                      <Circle className="h-5 w-5 text-[#529a6a] hover:text-[#057b40]" />
+                                      <Circle className="h-5 w-5 text-[#64645e] hover:text-[#282825]" />
                                     )}
                                   </button>
 
@@ -2148,13 +2148,13 @@ export default function BudgetAppPage() {
                                         onClick={() =>
                                           setSelectedItemId(item.id)
                                         }
-                                        className="text-left text-sm font-bold leading-snug break-words text-[#282825] hover:text-[#057b40] hover:underline"
+                                        className="text-left text-sm font-bold leading-snug break-words text-[#282825] hover:underline"
                                       >
                                         {item.name}
                                       </button>
                                       {item.cost_split &&
                                         item.cost_split !== "shared" && (
-                                          <span className="rounded-full bg-[#e1edfe] px-2 py-0.2 text-[10px] font-bold text-[#2173be]">
+                                          <span className="rounded-full bg-[#e1edfe] px-2 py-0.2 text-[10px] font-bold text-[#282825] border border-[#b8d5ff]">
                                             {item.cost_split === "personal_a"
                                               ? household.partner_a_name || "A"
                                               : household.partner_b_name || "B"}
@@ -2176,7 +2176,7 @@ export default function BudgetAppPage() {
                                           <span
                                             className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
                                               variance > 0
-                                                ? "bg-[#e7f4eb] text-[#057b40]"
+                                                ? "bg-[#e7f4eb] text-[#282825] border border-[#b5e3c4]"
                                                 : "bg-[#fdeee0] text-[#b85d10]"
                                             }`}
                                           >
@@ -2193,7 +2193,7 @@ export default function BudgetAppPage() {
                                         onClick={() =>
                                           setSelectedItemId(item.id)
                                         }
-                                        className="font-sans text-[10px] font-semibold text-[#057b40] hover:underline"
+                                        className="font-sans text-[10px] font-bold text-[#282825] underline decoration-[#529a6a] hover:opacity-80"
                                       >
                                         {locale === "sv"
                                           ? "Detaljer →"
@@ -2208,11 +2208,11 @@ export default function BudgetAppPage() {
                                   <div
                                     className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 transition ${
                                       isConfirmed
-                                        ? "border-[#529a6a] bg-[#e7f4eb]/60 focus-within:bg-white focus-within:border-[#057b40]"
-                                        : "border-[#c5c5ba] bg-[#f8f8f7] focus-within:bg-white focus-within:border-[#057b40]"
+                                        ? "border-[#282825] bg-[#e7f4eb] focus-within:bg-white"
+                                        : "border-[#c5c5ba] bg-[#f8f8f7] focus-within:bg-white focus-within:border-[#282825]"
                                     }`}
                                   >
-                                    <span className="font-serif text-base font-bold text-[#057b40]">
+                                    <span className="font-serif text-base font-bold text-[#282825]">
                                       +
                                     </span>
                                     <input
@@ -2245,7 +2245,7 @@ export default function BudgetAppPage() {
                                     <button
                                       type="button"
                                       onClick={commitInlineIncome}
-                                      className="inline-flex items-center justify-center rounded-xl bg-[#057b40] p-2 text-white hover:bg-[#046333] transition shadow-2xs"
+                                      className="inline-flex items-center justify-center rounded-xl bg-[#0c0d0d] p-2 text-white hover:bg-[#282825] transition shadow-2xs"
                                       title={
                                         locale === "sv"
                                           ? "Spara & bekräfta utbetalning"
@@ -2289,10 +2289,10 @@ export default function BudgetAppPage() {
                               setQuickIncomeAmount("");
                               setQuickIncomeGroupId(null);
                             }}
-                            className="rounded-2xl border border-[#057b40] bg-white p-3 space-y-2.5"
+                            className="rounded-2xl border border-[#282825] bg-[#f8f8f7] p-3 space-y-2.5"
                           >
                             <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-[#057b40]">
+                              <span className="text-xs font-bold text-[#282825]">
                                 {locale === "sv"
                                   ? "Lägg till ny inkomstkälla"
                                   : "Add new income source"}
@@ -2315,8 +2315,8 @@ export default function BudgetAppPage() {
                                   onClick={() => setQuickIncomeName(preset)}
                                   className={`rounded-full px-2.5 py-1 text-[11px] font-semibold border transition ${
                                     quickIncomeName === preset
-                                      ? "border-[#057b40] bg-[#057b40] text-white"
-                                      : "border-[#b5e3c4] bg-[#e7f4eb]/60 text-[#057b40] hover:border-[#057b40]"
+                                      ? "border-[#282825] bg-[#0c0d0d] text-white"
+                                      : "border-[#282825]/30 bg-white text-[#282825] hover:bg-[#e7f4eb]"
                                   }`}
                                 >
                                   + {preset}
@@ -2337,7 +2337,7 @@ export default function BudgetAppPage() {
                                 onChange={(e) =>
                                   setQuickIncomeName(e.target.value)
                                 }
-                                className="rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 text-xs font-semibold text-[#282825] focus:border-[#057b40] focus:bg-white focus:outline-none"
+                                className="rounded-xl border border-[#c5c5ba] bg-white px-3 py-2 text-xs font-semibold text-[#282825] focus:border-[#282825] focus:outline-none"
                               />
                               <input
                                 type="number"
@@ -2352,7 +2352,7 @@ export default function BudgetAppPage() {
                                 onChange={(e) =>
                                   setQuickIncomeAmount(e.target.value)
                                 }
-                                className="rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 font-mono text-xs font-semibold text-[#282825] focus:border-[#057b40] focus:bg-white focus:outline-none"
+                                className="rounded-xl border border-[#c5c5ba] bg-white px-3 py-2 font-mono text-xs font-semibold text-[#282825] focus:border-[#282825] focus:outline-none"
                               />
                               <select
                                 value={quickIncomeSplit}
@@ -2364,7 +2364,7 @@ export default function BudgetAppPage() {
                                       | "personal_b"
                                   )
                                 }
-                                className="rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2.5 py-2 text-xs font-semibold text-[#282825]"
+                                className="rounded-xl border border-[#c5c5ba] bg-white px-2.5 py-2 text-xs font-semibold text-[#282825]"
                               >
                                 <option value="shared">
                                   {locale === "sv" ? "Gemensam" : "Shared"}
@@ -2380,7 +2380,7 @@ export default function BudgetAppPage() {
 
                             <button
                               type="submit"
-                              className="w-full rounded-full bg-[#057b40] py-2 text-xs font-bold text-white hover:bg-[#046333] transition"
+                              className="w-full rounded-full bg-[#0c0d0d] py-2.5 text-xs font-bold text-white hover:bg-[#282825] transition"
                             >
                               {locale === "sv"
                                 ? "Spara & bekräfta inkomst"
@@ -2398,7 +2398,7 @@ export default function BudgetAppPage() {
                                     setQuickIncomeName(preset);
                                     setQuickIncomeGroupId(group.id);
                                   }}
-                                  className="rounded-full border border-[#529a6a]/40 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-[#057b40] hover:border-[#057b40] hover:bg-white transition"
+                                  className="rounded-full border border-[#282825]/35 bg-[#e7f4eb] px-2.5 py-1 text-[11px] font-semibold text-[#282825] hover:border-[#282825] hover:bg-[#b5e3c4] transition"
                                 >
                                   + {preset}
                                 </button>
@@ -2412,7 +2412,7 @@ export default function BudgetAppPage() {
                                 setDefaultGroupIdForNew(group.id);
                                 setItemModalOpen(true);
                               }}
-                              className="text-[11px] font-semibold text-[#057b40] hover:underline"
+                              className="text-[11px] font-bold text-[#282825] underline decoration-[#529a6a] hover:opacity-80"
                             >
                               {locale === "sv"
                                 ? "Fler alternativ →"
@@ -2472,7 +2472,7 @@ export default function BudgetAppPage() {
                               setEditingGroup(group);
                               setGroupModalOpen(true);
                             }}
-                            className="rounded-full border border-[#282825]/20 bg-white/70 p-1.5 text-[#64645e] hover:bg-white hover:text-[#282825] transition"
+                            className="rounded-full border border-[#282825]/25 bg-white p-1.5 text-[#64645e] hover:text-[#282825] transition"
                             title={
                               locale === "sv" ? "Redigera grupp" : "Edit group"
                             }
@@ -2488,7 +2488,7 @@ export default function BudgetAppPage() {
                               setDefaultGroupIdForNew(group.id);
                               setItemModalOpen(true);
                             }}
-                            className="rounded-full border border-[#282825]/30 bg-white/85 p-1.5 text-[#282825] hover:bg-white transition"
+                            className="rounded-full border border-[#282825]/30 bg-white p-1.5 text-[#282825] hover:bg-[#f8f8f7] transition"
                             title={t.actions.addItem}
                           >
                             <Plus className="h-3.5 w-3.5" />
@@ -2500,17 +2500,17 @@ export default function BudgetAppPage() {
                       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 pl-6 font-mono text-xs">
                         <div className="flex items-center gap-2 text-[11px] text-[#64645e]">
                           {dueInGroup.length > 0 && (
-                            <span className="rounded-full bg-white/80 px-2 py-0.5 font-bold text-[#282825] border border-[#282825]/15">
+                            <span className="rounded-full bg-white px-2 py-0.5 font-bold text-[#282825] border border-[#282825]/20">
                               {confirmedInGroup.length}/{dueInGroup.length}{" "}
                               {locale === "sv" ? "klara" : "done"}
                             </span>
                           )}
                           {Math.round(groupVariance) !== 0 && (
                             <span
-                              className={`font-bold ${
+                              className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
                                 groupVariance < 0
-                                  ? "text-[#057b40]"
-                                  : "text-[#b85d10]"
+                                  ? "bg-white text-[#282825] border border-[#282825]/25"
+                                  : "bg-[#fdeee0] text-[#b85d10]"
                               }`}
                             >
                               {groupVariance > 0 ? "+" : ""}
@@ -2547,7 +2547,7 @@ export default function BudgetAppPage() {
                     {/* Group Confirmation Progress Bar */}
                     {dueInGroup.length > 0 && (
                       <div className="px-4 pb-2.5">
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/75 border border-[#282825]/10">
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white border border-[#282825]/15">
                           <div
                             className={`h-full rounded-full transition-all ${hl.dot}`}
                             style={{ width: `${groupProgressPct}%` }}
@@ -2719,7 +2719,7 @@ export default function BudgetAppPage() {
                                         <span
                                           className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
                                             variance < 0
-                                              ? "bg-[#e7f4eb] text-[#057b40]"
+                                              ? "bg-[#e7f4eb] text-[#282825] border border-[#b5e3c4]"
                                               : "bg-[#fdeee0] text-[#b85d10]"
                                           }`}
                                         >
@@ -2763,7 +2763,7 @@ export default function BudgetAppPage() {
                                 <div
                                   className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 transition ${
                                     isConfirmed
-                                      ? "border-[#529a6a] bg-[#e7f4eb]/45 focus-within:bg-white focus-within:border-[#282825]"
+                                      ? "border-[#282825] bg-[#e7f4eb] focus-within:bg-white"
                                       : "border-[#c5c5ba] bg-[#f8f8f7] focus-within:bg-white focus-within:border-[#282825]"
                                   }`}
                                 >
@@ -2797,7 +2797,7 @@ export default function BudgetAppPage() {
                                   <button
                                     type="button"
                                     onClick={(e) => commitInlineAmount(e)}
-                                    className="inline-flex items-center justify-center rounded-xl bg-[#057b40] p-2 text-white hover:bg-[#046333] transition shadow-2xs"
+                                    className="inline-flex items-center justify-center rounded-xl bg-[#0c0d0d] p-2 text-white hover:bg-[#282825] transition shadow-2xs"
                                     title={
                                       locale === "sv"
                                         ? "Spara & bekräfta utfall"
@@ -3037,7 +3037,7 @@ export default function BudgetAppPage() {
             onClick={() => setActiveTab("budget")}
             className={`flex flex-col items-center gap-0.5 rounded-full px-4 py-1.5 text-xs font-semibold transition ${
               activeTab === "budget"
-                ? "bg-[#e7f4eb] text-[#057b40] border border-[#282825]"
+                ? "bg-[#e7f4eb] text-[#282825] border border-[#282825]"
                 : "text-[#64645e] hover:text-[#282825]"
             }`}
           >

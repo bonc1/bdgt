@@ -1669,7 +1669,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
               {uploadedFiles.map((fn) => (
                 <span
                   key={fn}
-                  className="inline-flex items-center gap-1 rounded-full border border-[#b5e3c4] bg-[#e7f4eb] px-2.5 py-0.5 font-mono text-[10px] font-bold text-[#057b40]"
+                  className="inline-flex items-center gap-1 rounded-full border border-[#282825]/30 bg-[#e7f4eb] px-2.5 py-0.5 font-mono text-[10px] font-bold text-[#282825]"
                 >
                   <Check className="h-2.5 w-2.5" />
                   <span>{fn}</span>
@@ -1696,7 +1696,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
             </label>
 
             {merchantGroups.length > 0 && (
-              <label className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-[#282825] bg-[#e1edfe] px-3.5 py-2 text-xs font-semibold text-[#2173be] hover:bg-[#b8d5ff]">
+              <label className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-[#282825] bg-[#e1edfe] px-3.5 py-2 text-xs font-semibold text-[#282825] hover:bg-[#b8d5ff]">
                 <Plus className="h-3.5 w-3.5" />
                 <span>
                   {locale === "sv"
@@ -1716,7 +1716,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
             <button
               type="button"
               onClick={handleLoadAmexSample}
-              className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#e7f4eb] px-3.5 py-2 text-xs font-semibold text-[#057b40]"
+              className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#e7f4eb] px-3.5 py-2 text-xs font-semibold text-[#282825] hover:bg-[#b5e3c4]"
             >
               <Sparkles className="h-3.5 w-3.5" />
               <span>
@@ -1728,7 +1728,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
 
         {/* O1 Duplicate Guard Banner */}
         {duplicatesSkippedCount > 0 && (
-          <div className="mt-2.5 flex items-center gap-2 rounded-2xl border border-[#529a6a] bg-[#e7f4eb] px-3.5 py-2 text-xs font-semibold text-[#057b40]">
+          <div className="mt-2.5 flex items-center gap-2 rounded-2xl border border-[#282825]/40 bg-[#e7f4eb] px-3.5 py-2 text-xs font-semibold text-[#282825]">
             <Check className="h-4 w-4 shrink-0" />
             <span>
               {locale === "sv"
@@ -2150,7 +2150,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                               rememberRule: true,
                             })
                           }
-                          className="w-full rounded-xl border border-[#c5c5ba] bg-[#e7f4eb] px-3 py-2 text-xs font-semibold text-[#057b40]"
+                          className="w-full rounded-xl border border-[#282825]/40 bg-[#e7f4eb] px-3 py-2 text-xs font-semibold text-[#282825]"
                         >
                           {items.map((it) => (
                             <option key={it.id} value={it.id}>
@@ -2169,7 +2169,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                               targetGroupId: e.target.value,
                             })
                           }
-                          className="w-full rounded-xl border border-[#c5c5ba] bg-[#fdeee0] px-3 py-2 text-xs font-semibold text-[#b85d10]"
+                          className="w-full rounded-xl border border-[#282825]/40 bg-[#fdeee0] px-3 py-2 text-xs font-semibold text-[#282825]"
                         >
                           {groups.map((g) => (
                             <option key={g.id} value={g.id}>
@@ -2211,7 +2211,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                                 rulePattern: e.target.value,
                               })
                             }
-                            className="w-28 rounded-lg border border-[#edc6fb] bg-[#f6e6fc]/60 px-2 py-0.5 font-mono text-[10px] font-bold text-[#7a2899] focus:outline-none"
+                            className="w-28 rounded-lg border border-[#282825]/30 bg-[#f6e6fc] px-2 py-0.5 font-mono text-[10px] font-bold text-[#282825] focus:outline-none"
                           />
                         )}
                       </div>

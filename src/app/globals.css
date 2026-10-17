@@ -48,7 +48,14 @@ html[data-theme="dark"] .bg-\[\#f4f4f2\]\/95 {
   background-color: rgba(24, 25, 27, 0.95) !important;
 }
 
-html[data-theme="dark"] .bg-white {
+html[data-theme="dark"] .bg-white,
+html[data-theme="dark"] .bg-white\/90,
+html[data-theme="dark"] .bg-white\/85,
+html[data-theme="dark"] .bg-white\/80,
+html[data-theme="dark"] .bg-white\/75,
+html[data-theme="dark"] .bg-white\/70,
+html[data-theme="dark"] .bg-\[\#fdfdfc\],
+html[data-theme="dark"] .bg-\[\#f4fbf6\] {
   background-color: #222325 !important;
 }
 
@@ -85,11 +92,13 @@ html[data-theme="dark"] .border-\[\#282825\] {
 }
 
 /* Muted dark highlighter washes in Ellipsus dark mode */
-html[data-theme="dark"] .bg-\[\#e7f4eb\] {
-  background-color: #1d3528 !important;
+html[data-theme="dark"] .bg-\[\#e7f4eb\],
+html[data-theme="dark"] .bg-\[\#e7f4eb\]\/60,
+html[data-theme="dark"] .bg-\[\#e7f4eb\]\/45 {
+  background-color: #193023 !important;
 }
 html[data-theme="dark"] .text-\[\#057b40\] {
-  color: #89edbb !important;
+  color: #a3f7cb !important;
 }
 html[data-theme="dark"] .border-\[\#b5e3c4\] {
   border-color: #2b533a !important;
@@ -115,7 +124,8 @@ html[data-theme="dark"] .border-\[\#b8d5ff\] {
   border-color: #284b7a !important;
 }
 
-html[data-theme="dark"] .bg-\[\#f6e6fc\] {
+html[data-theme="dark"] .bg-\[\#f6e6fc\],
+html[data-theme="dark"] .bg-\[\#f6e6fc\]\/60 {
   background-color: #361d42 !important;
 }
 html[data-theme="dark"] .text-\[\#7a2899\] {
@@ -130,6 +140,16 @@ html[data-theme="dark"] .bg-\[\#fdeeed\] {
 }
 html[data-theme="dark"] .text-\[\#b81a14\] {
   color: #fe6862 !important;
+}
+
+/* Ensure native select dropdown options always have high-contrast readable text */
+select option {
+  background-color: #ffffff;
+  color: #282825;
+}
+html[data-theme="dark"] select option {
+  background-color: #222325;
+  color: #f4f4f2;
 }
 
 body {
