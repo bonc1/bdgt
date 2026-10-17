@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import dynamic from "next/dynamic";
 import {
   ChevronLeft,
   ChevronRight,
@@ -13,7 +14,6 @@ import {
   Wallet,
   BarChart3,
   Users,
-  CalendarClock,
   CalendarRange,
   Layers,
   ArrowUpRight,
@@ -48,6 +48,7 @@ import {
   translations,
 } from "@/lib/i18n";
 import {
+  buildRecordsByMonthMap,
   computeGroupOverageStats,
   computeMonthlyBudget,
   createStarterDataset,
@@ -56,15 +57,25 @@ import {
 } from "@/lib/budget-engine";
 import { FollowUpSheet } from "@/components/FollowUpSheet";
 import { GroupFormModal, ItemFormModal } from "@/components/ItemFormModal";
-import { InsightsView } from "@/components/InsightsView";
-import { HouseholdView } from "@/components/HouseholdView";
-import { AnnualMatrixView } from "@/components/AnnualMatrixView";
-import {
-  BankImportModal,
-  ImportedRowAction,
-} from "@/components/BankImportModal";
-import { MonthCloseModal } from "@/components/MonthCloseModal";
+import type { ImportedRowAction } from "@/components/BankImportModal";
 import { createClient } from "@/lib/supabase/client";
+
+// S2: Lazy-load non-active tab views and heavy modals
+const InsightsView = dynamic(() =>
+  import("@/components/InsightsView").then((m) => m.InsightsView)
+);
+const HouseholdView = dynamic(() =>
+  import("@/components/HouseholdView").then((m) => m.HouseholdView)
+);
+const AnnualMatrixView = dynamic(() =>
+  import("@/components/AnnualMatrixView").then((m) => m.AnnualMatrixView)
+);
+const BankImportModal = dynamic(() =>
+  import("@/components/BankImportModal").then((m) => m.BankImportModal)
+);
+const MonthCloseModal = dynamic(() =>
+  import("@/components/MonthCloseModal").then((m) => m.MonthCloseModal)
+);
 
 const STORAGE_KEY = "bdgt_local_state_v1";
 
@@ -135,6 +146,9 @@ function getGroupHighlighter(group: BudgetGroup, idx: number) {
 
 export default function BudgetAppPage() {
   const supabase = useMemo(() => createClient(), []);
+  const currentRealYearMonth = useMemo(() => getCurrentYearMonth(), []);
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
 
   const [locale, setLocale] = useState<Locale>("sv");
   const [theme, setTheme] = useState<ThemeMode>("light");
@@ -215,6 +229,40 @@ export default function BudgetAppPage() {
     }
   }, [theme]);
 
+  // E4: Keyboard ArrowLeft / ArrowRight month navigation when no modal or input is focused
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (activeTab !== "budget" && activeTab !== "insights") return;
+      if (
+        selectedItemId ||
+        itemModalOpen ||
+        groupModalOpen ||
+        importModalOpen ||
+        monthCloseModalOpen
+      ) {
+        return;
+      }
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        setYearMonth((ym) => shiftYearMonth(ym, -1));
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        setYearMonth((ym) => shiftYearMonth(ym, 1));
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    activeTab,
+    selectedItemId,
+    itemModalOpen,
+    groupModalOpen,
+    importModalOpen,
+    monthCloseModalOpen,
+  ]);
+
   // 1. Load local state on mount
   useEffect(() => {
     try {
@@ -235,23 +283,27 @@ export default function BudgetAppPage() {
     }
   }, []);
 
+  // S4: Debounced localStorage persistence (300ms) so rapid edits don't block main thread
   useEffect(() => {
     if (!hydrated || userId) return;
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          locale,
-          theme,
-          household,
-          groups,
-          items,
-          records,
-        })
-      );
-    } catch {
-      // Ignore quota errors
-    }
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            locale,
+            theme,
+            household,
+            groups,
+            items,
+            records,
+          })
+        );
+      } catch {
+        // Ignore quota errors
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
   }, [hydrated, userId, locale, theme, household, groups, items, records]);
 
   // 2. Load from Supabase when authenticated
@@ -459,6 +511,17 @@ export default function BudgetAppPage() {
     };
   }, [supabase, loadCloudData]);
 
+  // S5: Pre-indexed O(1) lookup maps for records and groups
+  const recordsByMonthMap = useMemo(
+    () => buildRecordsByMonthMap(records),
+    [records]
+  );
+
+  const groupMap = useMemo(
+    () => new Map(groups.map((g) => [g.id, g])),
+    [groups]
+  );
+
   const computedItems = useMemo(
     () =>
       computeMonthlyBudget(
@@ -467,9 +530,11 @@ export default function BudgetAppPage() {
         records,
         yearMonth,
         viewMode,
-        locale
+        locale,
+        recordsByMonthMap.get(yearMonth),
+        groupMap
       ),
-    [groups, items, records, yearMonth, viewMode, locale]
+    [groups, items, records, yearMonth, viewMode, locale, recordsByMonthMap, groupMap]
   );
 
   const groupOverageStats = useMemo(
@@ -569,6 +634,7 @@ export default function BudgetAppPage() {
     };
   }, [computedItems, groups, household.group_overage_budgets, groupOverageStats]);
 
+  // S1: Optimistic UI updates before Supabase round-trips
   const handleConfirmActual = async (
     itemId: string,
     actualAmount: number,
@@ -578,10 +644,12 @@ export default function BudgetAppPage() {
     const targetItem = items.find((i) => i.id === itemId);
     if (!targetItem) return;
 
+    let nextExpected = targetItem.expected_amount;
     if (futureDecision) {
       const itemUpdates: Partial<BudgetItem> = {};
       if (futureDecision.updateExpectedAmount !== undefined) {
         itemUpdates.expected_amount = futureDecision.updateExpectedAmount;
+        nextExpected = futureDecision.updateExpectedAmount;
       }
       if (
         futureDecision.makeRecurringInterval !== undefined &&
@@ -594,35 +662,58 @@ export default function BudgetAppPage() {
       }
 
       if (Object.keys(itemUpdates).length > 0) {
-        if (userId && dbReady) {
-          await supabase
-            .from("budget_items")
-            .update(itemUpdates)
-            .eq("id", itemId);
-        }
         setItems((prev) =>
           prev.map((it) =>
             it.id === itemId ? { ...it, ...itemUpdates } : it
           )
         );
+        if (userId && dbReady) {
+          supabase
+            .from("budget_items")
+            .update(itemUpdates)
+            .eq("id", itemId)
+            .then(() => {});
+        }
       }
     }
 
     const existingRec = records.find(
       (r) => r.item_id === itemId && r.year_month === yearMonth
     );
+    const nowIso = new Date().toISOString();
+
+    const optimisticRecord: MonthlyRecord = {
+      id: existingRec?.id || `rec-${Date.now()}`,
+      household_id: household.id,
+      item_id: itemId,
+      year_month: yearMonth,
+      expected_snapshot: nextExpected,
+      actual_amount: actualAmount,
+      status: "confirmed",
+      notes: notes || null,
+      confirmed_at: nowIso,
+      transactions: existingRec?.transactions || [],
+    };
+
+    // Apply optimistic state immediately
+    setRecords((prev) => [
+      ...prev.filter(
+        (r) => !(r.item_id === itemId && r.year_month === yearMonth)
+      ),
+      optimisticRecord,
+    ]);
 
     if (userId && dbReady) {
       const payload = {
         household_id: household.id,
         item_id: itemId,
         year_month: yearMonth,
-        expected_snapshot: targetItem.expected_amount,
+        expected_snapshot: nextExpected,
         actual_amount: actualAmount,
         status: "confirmed" as const,
         notes: notes || null,
         confirmed_by: userId,
-        confirmed_at: new Date().toISOString(),
+        confirmed_at: nowIso,
       };
 
       const { data } = await supabase
@@ -646,29 +737,8 @@ export default function BudgetAppPage() {
             },
           ];
         });
-        return;
       }
     }
-
-    const updatedRecord: MonthlyRecord = {
-      id: existingRec?.id || `rec-${Date.now()}`,
-      household_id: household.id,
-      item_id: itemId,
-      year_month: yearMonth,
-      expected_snapshot: targetItem.expected_amount,
-      actual_amount: actualAmount,
-      status: "confirmed",
-      notes: notes || null,
-      confirmed_at: new Date().toISOString(),
-      transactions: existingRec?.transactions || [],
-    };
-
-    setRecords((prev) => [
-      ...prev.filter(
-        (r) => !(r.item_id === itemId && r.year_month === yearMonth)
-      ),
-      updatedRecord,
-    ]);
   };
 
   // Inline 1-Tap Quick-Confirm toggle directly from the dashboard list!
@@ -681,20 +751,78 @@ export default function BudgetAppPage() {
     if (isConfirmed) {
       await handleResetPending(c.item.id);
     } else {
-      const txSum = (c.record?.transactions || []).reduce(
-        (s, tx) => s + Number(tx.amount),
-        0
-      );
-      const amtToConfirm = txSum > 0 ? txSum : c.displayedExpected;
+      const txs = c.record?.transactions || [];
+      const txSum = txs.reduce((s, tx) => s + Number(tx.amount), 0);
+      const amtToConfirm = txs.length > 0 ? txSum : c.displayedExpected;
       await handleConfirmActual(c.item.id, amtToConfirm, c.record?.notes || "");
     }
   };
 
+  // S1 + S3: Single batch upsert + immediate optimistic update for bulk confirming items
   const handleBulkConfirmItems = async (itemIds: string[]) => {
-    for (const id of itemIds) {
-      const comp = computedItems.find((c) => c.item.id === id);
-      if (comp) {
-        await handleConfirmActual(id, comp.displayedExpected, "");
+    if (itemIds.length === 0) return;
+    const nowIso = new Date().toISOString();
+    const compsToConfirm = itemIds
+      .map((id) => computedItems.find((c) => c.item.id === id))
+      .filter((c): c is ComputedItemMonth => Boolean(c));
+
+    if (compsToConfirm.length === 0) return;
+
+    const idSet = new Set(compsToConfirm.map((c) => c.item.id));
+    setRecords((prev) => {
+      const remaining = prev.filter(
+        (r) => !(idSet.has(r.item_id) && r.year_month === yearMonth)
+      );
+      const optimisticNew: MonthlyRecord[] = compsToConfirm.map((c, idx) => ({
+        id: c.record?.id || `rec-${Date.now()}-${idx}`,
+        household_id: household.id,
+        item_id: c.item.id,
+        year_month: yearMonth,
+        expected_snapshot: c.item.expected_amount,
+        actual_amount: c.displayedExpected,
+        status: "confirmed",
+        notes: c.record?.notes || null,
+        confirmed_at: nowIso,
+        transactions: c.record?.transactions || [],
+      }));
+      return [...remaining, ...optimisticNew];
+    });
+
+    if (userId && dbReady) {
+      const payloads = compsToConfirm.map((c) => ({
+        household_id: household.id,
+        item_id: c.item.id,
+        year_month: yearMonth,
+        expected_snapshot: c.item.expected_amount,
+        actual_amount: c.displayedExpected,
+        status: "confirmed" as const,
+        notes: c.record?.notes || null,
+        confirmed_by: userId,
+        confirmed_at: nowIso,
+      }));
+      const { data } = await supabase
+        .from("monthly_records")
+        .upsert(payloads, { onConflict: "item_id,year_month" })
+        .select();
+
+      if (data && data.length > 0) {
+        setRecords((prev) => {
+          const remaining = prev.filter(
+            (r) => !(idSet.has(r.item_id) && r.year_month === yearMonth)
+          );
+          const synced: MonthlyRecord[] = data.map((row) => {
+            const prevComp = compsToConfirm.find(
+              (c) => c.item.id === row.item_id
+            );
+            return {
+              ...(row as MonthlyRecord),
+              actual_amount: Number(row.actual_amount),
+              expected_snapshot: Number(row.expected_snapshot),
+              transactions: prevComp?.record?.transactions || [],
+            };
+          });
+          return [...remaining, ...synced];
+        });
       }
     }
   };
@@ -706,20 +834,21 @@ export default function BudgetAppPage() {
     const target = items.find((i) => i.id === savingsItemId);
     if (!target) return;
     const nextSaved = Number(target.current_saved || 0) + amount;
+    // S1: Optimistic update first
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === savingsItemId ? { ...i, current_saved: nextSaved } : i
+      )
+    );
     if (userId && dbReady) {
       await supabase
         .from("budget_items")
         .update({ current_saved: nextSaved })
         .eq("id", savingsItemId);
     }
-    setItems((prev) =>
-      prev.map((i) =>
-        i.id === savingsItemId ? { ...i, current_saved: nextSaved } : i
-      )
-    );
   };
 
-  // O2 + O4 + O5: Batch-Optimized Multi-Month Import with Pre-Import Undo Snapshot
+  // O2 + O4 + O5 + I5: Batch-Optimized Multi-Month Import with Refund Offset & Pre-Import Undo Snapshot
   const handleImportRows = async (rows: ImportedRowAction[]) => {
     const activeRows = rows.filter((r) => r.actionType !== "skip");
     if (activeRows.length === 0) return;
@@ -783,10 +912,9 @@ export default function BudgetAppPage() {
       const sortedMonths = Array.from(byMonth.keys()).sort();
       const latestMonth = sortedMonths[sortedMonths.length - 1] || yearMonth;
       const latestMonthRows = byMonth.get(latestMonth) || merchantRows;
-      const latestMonthSum = Math.max(
-        0,
-        Math.round(latestMonthRows.reduce((s, r) => s + r.amount, 0) * 100) / 100
-      );
+      const latestMonthRawSum =
+        Math.round(latestMonthRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+      const latestMonthBaseline = Math.max(0, Math.round(latestMonthRawSum));
 
       // Check if an item with this exact name already exists in the household
       const existingSameName = workingItems.find(
@@ -806,7 +934,7 @@ export default function BudgetAppPage() {
         > = {
           name: sample.description,
           group_id: targetGroupId,
-          expected_amount: isOnce ? 0 : Math.round(latestMonthSum),
+          expected_amount: isOnce ? 0 : latestMonthBaseline,
           entry_mode: latestMonthRows.length > 1 ? "multi_entry" : "single_bill",
           recurrence_interval_months: isOnce ? 0 : 1,
           one_time_year_month: isOnce ? latestMonth : null,
@@ -874,7 +1002,7 @@ export default function BudgetAppPage() {
         recordsBatch.push({
           itemId: itemIdToUse,
           targetYM: ym,
-          expectedSnapshot: isOnce ? 0 : Math.round(latestMonthSum),
+          expectedSnapshot: isOnce ? 0 : latestMonthBaseline,
           monthRows: mRows,
         });
       }
@@ -905,15 +1033,20 @@ export default function BudgetAppPage() {
 
     setItems(workingItems);
 
-    // O2: Prepare merged monthly records & sub-transactions in bulk
+    // O2 + I5: Prepare merged monthly records & sub-transactions in bulk (refunds reduce spend by default)
     const nowIso = new Date().toISOString();
     const preparedRecords = recordsBatch.map((b) => {
       const existingRec = snapshotRecords.find(
         (r) => r.item_id === b.itemId && r.year_month === b.targetYM
       );
       const prevTxs = existingRec?.transactions || [];
+      const hasExistingSingleActual =
+        prevTxs.length === 0 &&
+        existingRec?.status === "confirmed" &&
+        existingRec.actual_amount !== null &&
+        existingRec.actual_amount !== undefined;
 
-      // Combine existing sub-transactions (if any) with new imported rows
+      // Combine existing sub-transactions (or existing confirmed single actual) with new imported rows
       const combinedTxInputs: {
         amount: number;
         description: string;
@@ -924,6 +1057,16 @@ export default function BudgetAppPage() {
           description: t.description,
           spent_on: t.spent_on,
         })),
+        ...(hasExistingSingleActual
+          ? [
+              {
+                amount: Number(existingRec!.actual_amount),
+                description:
+                  locale === "sv" ? "Tidigare loggat" : "Previously logged",
+                spent_on: `${b.targetYM}-01`,
+              },
+            ]
+          : []),
         ...b.monthRows.map((r) => ({
           amount: r.amount,
           description: r.description,
@@ -931,19 +1074,11 @@ export default function BudgetAppPage() {
         })),
       ];
 
+      // I5: Do NOT clamp to Math.max(0, ...) so negative refund rows offset spend on the item/group
       const totalAmount =
-        prevTxs.length > 0
-          ? Math.max(
-              0,
-              Math.round(
-                combinedTxInputs.reduce((s, t) => s + t.amount, 0) * 100
-              ) / 100
-            )
-          : Math.max(
-              0,
-              Math.round(b.monthRows.reduce((s, r) => s + r.amount, 0) * 100) /
-                100
-            );
+        Math.round(
+          combinedTxInputs.reduce((s, t) => s + t.amount, 0) * 100
+        ) / 100;
 
       const keepSubTxs =
         combinedTxInputs.length > 1 ? combinedTxInputs : [];
@@ -1108,25 +1243,76 @@ export default function BudgetAppPage() {
     }
   };
 
-  // F4: Update Expected Baseline Amount from Insights Smart Baseline Adjuster
+  // F4 + S1: Update Expected Baseline Amount from Insights Smart Baseline Adjuster
   const handleUpdateItemExpectedAmount = async (
     itemId: string,
     newExpected: number
   ) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId ? { ...it, expected_amount: newExpected } : it
+      )
+    );
     if (userId && dbReady) {
       await supabase
         .from("budget_items")
         .update({ expected_amount: newExpected })
         .eq("id", itemId);
     }
-    setItems((prev) =>
-      prev.map((it) =>
-        it.id === itemId ? { ...it, expected_amount: newExpected } : it
-      )
-    );
   };
 
-  // F4: Copy Previous Month's Confirmed Actuals into Expected Baseline
+  // E3: Quick Move / Reclassify Item Between Groups in 1 tap from FollowUpSheet
+  const handleQuickMoveItemGroup = async (
+    itemId: string,
+    newGroupId: string
+  ) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId ? { ...it, group_id: newGroupId } : it
+      )
+    );
+    if (userId && dbReady) {
+      await supabase
+        .from("budget_items")
+        .update({ group_id: newGroupId })
+        .eq("id", itemId);
+    }
+  };
+
+  // E3: 1-Tap Toggle between Unplanned (0 kr budget) and Planned One-Off inside FollowUpSheet
+  const handleToggleUnplannedOneOff = async (
+    itemId: string,
+    makeUnplanned: boolean,
+    referenceAmount: number
+  ) => {
+    const nextExpected = makeUnplanned
+      ? 0
+      : Math.max(0, Math.round(referenceAmount));
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId ? { ...it, expected_amount: nextExpected } : it
+      )
+    );
+    setRecords((prev) =>
+      prev.map((r) =>
+        r.item_id === itemId ? { ...r, expected_snapshot: nextExpected } : r
+      )
+    );
+    if (userId && dbReady) {
+      await Promise.all([
+        supabase
+          .from("budget_items")
+          .update({ expected_amount: nextExpected })
+          .eq("id", itemId),
+        supabase
+          .from("monthly_records")
+          .update({ expected_snapshot: nextExpected })
+          .eq("item_id", itemId),
+      ]);
+    }
+  };
+
+  // F4 + S1 + S3: Copy Previous Month's Confirmed Actuals into Expected Baseline
   const handleCopyPreviousMonthActuals = async (): Promise<number> => {
     const prevYM = shiftYearMonth(yearMonth, -1);
     const prevConfirmed = records.filter(
@@ -1143,15 +1329,6 @@ export default function BudgetAppPage() {
       updatesMap.set(r.item_id, Math.round(Number(r.actual_amount)));
     }
 
-    if (userId && dbReady) {
-      for (const [id, nextAmt] of updatesMap.entries()) {
-        await supabase
-          .from("budget_items")
-          .update({ expected_amount: nextAmt })
-          .eq("id", id);
-      }
-    }
-
     setItems((prev) =>
       prev.map((it) =>
         updatesMap.has(it.id)
@@ -1159,6 +1336,17 @@ export default function BudgetAppPage() {
           : it
       )
     );
+
+    if (userId && dbReady) {
+      await Promise.all(
+        Array.from(updatesMap.entries()).map(([id, nextAmt]) =>
+          supabase
+            .from("budget_items")
+            .update({ expected_amount: nextAmt })
+            .eq("id", id)
+        )
+      );
+    }
 
     return updatesMap.size;
   };
@@ -1169,13 +1357,7 @@ export default function BudgetAppPage() {
     );
     if (!existingRec) return;
 
-    if (userId && dbReady) {
-      await supabase
-        .from("monthly_records")
-        .update({ status: "pending", actual_amount: null })
-        .eq("id", existingRec.id);
-    }
-
+    // S1: Optimistic update first
     setRecords((prev) =>
       prev.map((r) =>
         r.id === existingRec.id
@@ -1183,6 +1365,13 @@ export default function BudgetAppPage() {
           : r
       )
     );
+
+    if (userId && dbReady) {
+      await supabase
+        .from("monthly_records")
+        .update({ status: "pending", actual_amount: null })
+        .eq("id", existingRec.id);
+    }
   };
 
   const handleAddTransaction = async (
@@ -1195,68 +1384,9 @@ export default function BudgetAppPage() {
     if (!targetItem) return;
 
     const spentOn = customSpentOn || new Date().toISOString().slice(0, 10);
+    const tempTxId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    if (userId && dbReady) {
-      let existingRec = records.find(
-        (r) => r.item_id === itemId && r.year_month === yearMonth
-      );
-      if (!existingRec) {
-        const { data: createdRec } = await supabase
-          .from("monthly_records")
-          .upsert(
-            {
-              household_id: household.id,
-              item_id: itemId,
-              year_month: yearMonth,
-              expected_snapshot: targetItem.expected_amount,
-              status: "pending",
-            },
-            { onConflict: "item_id,year_month" }
-          )
-          .select()
-          .single();
-        if (createdRec) {
-          existingRec = { ...(createdRec as MonthlyRecord), transactions: [] };
-        }
-      }
-
-      if (existingRec) {
-        const { data: newTx } = await supabase
-          .from("record_transactions")
-          .insert({
-            household_id: household.id,
-            monthly_record_id: existingRec.id,
-            amount,
-            description,
-            spent_on: spentOn,
-            created_by: userId,
-          })
-          .select()
-          .single();
-
-        if (newTx) {
-          setRecords((prev) => {
-            const current = prev.find(
-              (r) => r.item_id === itemId && r.year_month === yearMonth
-            );
-            const prevTxs = current?.transactions || [];
-            const updatedRec: MonthlyRecord = {
-              ...(current || existingRec!),
-              transactions: [newTx, ...prevTxs],
-            };
-            return [
-              ...prev.filter(
-                (r) => !(r.item_id === itemId && r.year_month === yearMonth)
-              ),
-              updatedRec,
-            ];
-          });
-          return;
-        }
-      }
-    }
-
-    const newTxId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    // S1: Optimistic update immediately
     setRecords((prev) => {
       const current = prev.find(
         (r) => r.item_id === itemId && r.year_month === yearMonth
@@ -1265,7 +1395,7 @@ export default function BudgetAppPage() {
         current?.id ||
         `rec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const newTx = {
-        id: newTxId,
+        id: tempTxId,
         household_id: household.id,
         monthly_record_id: recId,
         amount,
@@ -1294,12 +1424,67 @@ export default function BudgetAppPage() {
         nextRecord,
       ];
     });
+
+    if (userId && dbReady) {
+      let existingRec = records.find(
+        (r) => r.item_id === itemId && r.year_month === yearMonth
+      );
+      if (!existingRec || existingRec.id.startsWith("rec-")) {
+        const { data: createdRec } = await supabase
+          .from("monthly_records")
+          .upsert(
+            {
+              household_id: household.id,
+              item_id: itemId,
+              year_month: yearMonth,
+              expected_snapshot: targetItem.expected_amount,
+              status: existingRec?.status || "pending",
+              actual_amount: existingRec?.actual_amount ?? null,
+            },
+            { onConflict: "item_id,year_month" }
+          )
+          .select()
+          .single();
+        if (createdRec) {
+          existingRec = { ...(createdRec as MonthlyRecord), transactions: [] };
+        }
+      }
+
+      if (existingRec) {
+        const { data: newTx } = await supabase
+          .from("record_transactions")
+          .insert({
+            household_id: household.id,
+            monthly_record_id: existingRec.id,
+            amount,
+            description,
+            spent_on: spentOn,
+            created_by: userId,
+          })
+          .select()
+          .single();
+
+        if (newTx) {
+          setRecords((prev) =>
+            prev.map((r) =>
+              r.item_id === itemId && r.year_month === yearMonth
+                ? {
+                    ...r,
+                    id: existingRec!.id,
+                    transactions: (r.transactions || []).map((t) =>
+                      t.id === tempTxId ? newTx : t
+                    ),
+                  }
+                : r
+            )
+          );
+        }
+      }
+    }
   };
 
   const handleDeleteTransaction = async (itemId: string, txId: string) => {
-    if (userId && dbReady) {
-      await supabase.from("record_transactions").delete().eq("id", txId);
-    }
+    // S1: Optimistic update first
     setRecords((prev) =>
       prev.map((r) =>
         r.item_id === itemId && r.year_month === yearMonth
@@ -1312,6 +1497,9 @@ export default function BudgetAppPage() {
           : r
       )
     );
+    if (userId && dbReady) {
+      await supabase.from("record_transactions").delete().eq("id", txId);
+    }
   };
 
   const handleSaveItem = async (
@@ -1320,12 +1508,12 @@ export default function BudgetAppPage() {
     autoConfirmActual?: number
   ) => {
     if (existingId) {
-      if (userId && dbReady) {
-        await supabase.from("budget_items").update(data).eq("id", existingId);
-      }
       setItems((prev) =>
         prev.map((it) => (it.id === existingId ? { ...it, ...data } : it))
       );
+      if (userId && dbReady) {
+        await supabase.from("budget_items").update(data).eq("id", existingId);
+      }
     } else {
       let createdItemId = `itm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       if (userId && dbReady) {
@@ -1413,11 +1601,11 @@ export default function BudgetAppPage() {
   };
 
   const handleDeleteItem = async (id: string) => {
+    setItems((prev) => prev.filter((i) => i.id !== id));
+    if (selectedItemId === id) setSelectedItemId(null);
     if (userId && dbReady) {
       await supabase.from("budget_items").delete().eq("id", id);
     }
-    setItems((prev) => prev.filter((i) => i.id !== id));
-    if (selectedItemId === id) setSelectedItemId(null);
   };
 
   const persistGroupOverageLocal = (groupId: string, amount: number) => {
@@ -1490,14 +1678,16 @@ export default function BudgetAppPage() {
       )
     );
     if (userId && dbReady) {
-      await supabase
-        .from("budget_items")
-        .update({ expected_amount: 0 })
-        .in("id", legacyConfirmedOneOffIds);
-      await supabase
-        .from("monthly_records")
-        .update({ expected_snapshot: 0 })
-        .in("item_id", legacyConfirmedOneOffIds);
+      await Promise.all([
+        supabase
+          .from("budget_items")
+          .update({ expected_amount: 0 })
+          .in("id", legacyConfirmedOneOffIds),
+        supabase
+          .from("monthly_records")
+          .update({ expected_snapshot: 0 })
+          .in("item_id", legacyConfirmedOneOffIds),
+      ]);
     }
   };
 
@@ -1515,16 +1705,6 @@ export default function BudgetAppPage() {
 
     if (existingId) {
       persistGroupOverageLocal(existingId, cleanOverage);
-      if (userId && dbReady) {
-        await supabase
-          .from("budget_groups")
-          .update({ name, kind, color })
-          .eq("id", existingId);
-        await supabase
-          .from("budget_groups")
-          .update({ overage_budget: cleanOverage })
-          .eq("id", existingId);
-      }
       setGroups((prev) =>
         prev.map((g) =>
           g.id === existingId
@@ -1532,6 +1712,12 @@ export default function BudgetAppPage() {
             : g
         )
       );
+      if (userId && dbReady) {
+        await supabase
+          .from("budget_groups")
+          .update({ name, kind, color, overage_budget: cleanOverage })
+          .eq("id", existingId);
+      }
       return;
     }
 
@@ -1580,13 +1766,14 @@ export default function BudgetAppPage() {
   };
 
   const handleDeleteGroup = async (groupId: string) => {
+    setGroups((prev) => prev.filter((g) => g.id !== groupId));
+    setItems((prev) => prev.filter((i) => i.group_id !== groupId));
     if (userId && dbReady) {
       await supabase.from("budget_groups").delete().eq("id", groupId);
     }
-    setGroups((prev) => prev.filter((g) => g.id !== groupId));
-    setItems((prev) => prev.filter((i) => i.group_id !== groupId));
   };
 
+  // S1 + S3: Parallel Promise.all group reordering
   const handleMoveGroup = async (
     groupId: string,
     direction: "up" | "down"
@@ -1602,20 +1789,22 @@ export default function BudgetAppPage() {
     setGroups(reordered);
 
     if (userId && dbReady) {
-      for (const g of reordered) {
-        await supabase
-          .from("budget_groups")
-          .update({ sort_order: g.sort_order })
-          .eq("id", g.id);
-      }
+      await Promise.all(
+        reordered.map((g) =>
+          supabase
+            .from("budget_groups")
+            .update({ sort_order: g.sort_order })
+            .eq("id", g.id)
+        )
+      );
     }
   };
 
   const handleUpdateHousehold = async (patch: Partial<Household>) => {
+    setHousehold((prev) => ({ ...prev, ...patch }));
     if (userId && dbReady) {
       await supabase.from("households").update(patch).eq("id", household.id);
     }
-    setHousehold((prev) => ({ ...prev, ...patch }));
   };
 
   const handleJoinHouseholdByCode = async (code: string) => {
@@ -1724,27 +1913,64 @@ export default function BudgetAppPage() {
         </div>
       </header>
 
-      {/* Editorial Month Selector Strip */}
+      {/* Editorial Month Selector Strip (E4: Touch swipe + Keyboard arrows + 1-Tap Idag/Today Jump Pill) */}
       {(activeTab === "budget" || activeTab === "insights") && (
-        <div className="mb-3 flex items-center justify-between rounded-full border border-[#282825] bg-white px-2.5 py-1.5 shadow-editorial">
+        <div
+          onTouchStart={(e) => {
+            touchStartXRef.current = e.touches[0]?.clientX ?? null;
+            touchStartYRef.current = e.touches[0]?.clientY ?? null;
+          }}
+          onTouchEnd={(e) => {
+            if (touchStartXRef.current === null || touchStartYRef.current === null)
+              return;
+            const dx =
+              (e.changedTouches[0]?.clientX ?? touchStartXRef.current) -
+              touchStartXRef.current;
+            const dy =
+              (e.changedTouches[0]?.clientY ?? touchStartYRef.current) -
+              touchStartYRef.current;
+            touchStartXRef.current = null;
+            touchStartYRef.current = null;
+            if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+              setYearMonth((ym) => shiftYearMonth(ym, dx < 0 ? 1 : -1));
+            }
+          }}
+          className="mb-3 flex items-center justify-between rounded-full border border-[#282825] bg-white px-2.5 py-1.5 shadow-editorial select-none"
+        >
           <button
             type="button"
             onClick={() => setYearMonth((ym) => shiftYearMonth(ym, -1))}
             className="rounded-full p-1.5 text-[#282825] hover:bg-[#ecece9] transition"
+            title={locale === "sv" ? "Föregående månad (←)" : "Previous month (←)"}
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
 
-          <div className="text-center">
+          <div className="flex items-center justify-center gap-2">
             <div className="font-serif text-xl tracking-wide text-[#282825]">
               {formatYearMonthLabel(yearMonth, locale)}
             </div>
+            {yearMonth !== currentRealYearMonth && (
+              <button
+                type="button"
+                onClick={() => setYearMonth(currentRealYearMonth)}
+                className="rounded-full border border-[#282825] bg-[#e7f4eb] px-2.5 py-0.5 text-[11px] font-bold text-[#282825] hover:bg-[#b5e3c4] transition"
+                title={
+                  locale === "sv"
+                    ? "Hoppa till innevarande månad"
+                    : "Jump to current month"
+                }
+              >
+                {locale === "sv" ? "Idag" : "Today"}
+              </button>
+            )}
           </div>
 
           <button
             type="button"
             onClick={() => setYearMonth((ym) => shiftYearMonth(ym, 1))}
             className="rounded-full p-1.5 text-[#282825] hover:bg-[#ecece9] transition"
+            title={locale === "sv" ? "Nästa månad (→)" : "Next month (→)"}
           >
             <ChevronRight className="h-4 w-4" />
           </button>
@@ -2419,12 +2645,18 @@ export default function BudgetAppPage() {
                                       type="number"
                                       step="any"
                                       value={draftStr}
+                                      onFocus={(e) => e.currentTarget.select()}
                                       onChange={(e) =>
                                         setInlineIncomeDrafts((prev) => ({
                                           ...prev,
                                           [draftKey]: e.target.value,
                                         }))
                                       }
+                                      onBlur={() => {
+                                        if (isDraftDirty) {
+                                          commitInlineIncome();
+                                        }
+                                      }}
                                       onKeyDown={(e) => {
                                         if (e.key === "Enter") {
                                           e.preventDefault();
@@ -2953,7 +3185,7 @@ export default function BudgetAppPage() {
                         const currentEffectiveVal =
                           displayedActual !== null
                             ? displayedActual
-                            : txSum > 0
+                            : hasPartialTx
                             ? txSum
                             : displayedExpected;
                         const draftKey = `${item.id}::${yearMonth}`;
@@ -2964,21 +3196,21 @@ export default function BudgetAppPage() {
                         const parsedDraft = Number(draftStr);
                         const isDraftDirty =
                           inlineIncomeDrafts[draftKey] !== undefined &&
+                          draftStr.trim() !== "" &&
                           !isNaN(parsedDraft) &&
-                          parsedDraft >= 0 &&
                           (Math.round(parsedDraft) !==
                             Math.round(currentEffectiveVal) ||
                             !isConfirmed);
 
                         const commitInlineAmount = async (
-                          e?: React.MouseEvent | React.KeyboardEvent
+                          e?: React.MouseEvent | React.KeyboardEvent | React.FocusEvent
                         ) => {
                           if (e) e.stopPropagation();
                           const val =
                             inlineIncomeDrafts[draftKey] !== undefined
                               ? Number(inlineIncomeDrafts[draftKey])
                               : currentEffectiveVal;
-                          if (!isNaN(val) && val >= 0) {
+                          if (!isNaN(val)) {
                             await handleConfirmActual(
                               item.id,
                               val,
@@ -3103,7 +3335,7 @@ export default function BudgetAppPage() {
                                 </div>
                               </div>
 
-                              {/* D2: Direct Inline Quick-Edit Amount Box for Expense & Savings Items */}
+                              {/* D2 + E1: Direct Inline Quick-Edit Amount Box for Expense & Savings Items */}
                               <div
                                 className="flex items-center gap-1.5 shrink-0"
                                 onClick={(e) => e.stopPropagation()}
@@ -3119,12 +3351,18 @@ export default function BudgetAppPage() {
                                     type="number"
                                     step="any"
                                     value={draftStr}
+                                    onFocus={(e) => e.currentTarget.select()}
                                     onChange={(e) =>
                                       setInlineIncomeDrafts((prev) => ({
                                         ...prev,
                                         [draftKey]: e.target.value,
                                       }))
                                     }
+                                    onBlur={(e) => {
+                                      if (isDraftDirty) {
+                                        commitInlineAmount(e);
+                                      }
+                                    }}
                                     onKeyDown={(e) => {
                                       if (e.key === "Enter") {
                                         e.preventDefault();
@@ -3168,7 +3406,7 @@ export default function BudgetAppPage() {
                                         ? "bg-[#eb5b55]"
                                         : "bg-[#529a6a]"
                                     }`}
-                                    style={{ width: `${txPct}%` }}
+                                    style={{ width: `${Math.max(0, txPct)}%` }}
                                   />
                                 </div>
                                 <div className="mt-1.5 flex flex-wrap gap-1">
@@ -3296,6 +3534,7 @@ export default function BudgetAppPage() {
       {/* Follow-Up Bottom Sheet */}
       <FollowUpSheet
         computed={selectedComputed}
+        groups={groups}
         yearMonth={yearMonth}
         currency={household.currency}
         locale={locale}
@@ -3310,6 +3549,8 @@ export default function BudgetAppPage() {
           setUnexpectedMode(false);
           setItemModalOpen(true);
         }}
+        onQuickMoveGroup={handleQuickMoveItemGroup}
+        onToggleUnplannedOneOff={handleToggleUnplannedOneOff}
       />
 
       {/* Add / Edit Budget Item Modal */}

@@ -15,6 +15,7 @@ import {
   Repeat,
 } from "lucide-react";
 import {
+  BudgetGroup,
   ComputedItemMonth,
   FutureUpdateDecision,
   Locale,
@@ -25,6 +26,7 @@ import { formatCurrency, translations } from "@/lib/i18n";
 
 interface FollowUpSheetProps {
   computed: ComputedItemMonth | null;
+  groups?: BudgetGroup[];
   yearMonth: string;
   currency: string;
   locale: Locale;
@@ -44,10 +46,17 @@ interface FollowUpSheetProps {
   ) => Promise<void>;
   onDeleteTransaction: (itemId: string, txId: string) => Promise<void>;
   onEditItem: (computed: ComputedItemMonth) => void;
+  onQuickMoveGroup?: (itemId: string, newGroupId: string) => Promise<void>;
+  onToggleUnplannedOneOff?: (
+    itemId: string,
+    makeUnplanned: boolean,
+    referenceAmount: number
+  ) => Promise<void>;
 }
 
 export function FollowUpSheet({
   computed,
+  groups = [],
   yearMonth,
   currency,
   locale,
@@ -57,6 +66,8 @@ export function FollowUpSheet({
   onAddTransaction,
   onDeleteTransaction,
   onEditItem,
+  onQuickMoveGroup,
+  onToggleUnplannedOneOff,
 }: FollowUpSheetProps) {
   const t = translations[locale];
   const [actualInput, setActualInput] = useState<string>("");
@@ -80,7 +91,7 @@ export function FollowUpSheet({
     const sum = txs.reduce((s, tx) => s + Number(tx.amount), 0);
     if (record?.actual_amount !== null && record?.actual_amount !== undefined) {
       setActualInput(String(record.actual_amount));
-    } else if (sum > 0) {
+    } else if (txs.length > 0) {
       setActualInput(String(sum));
     } else if (displayedActual !== null) {
       setActualInput(String(displayedActual));
@@ -106,7 +117,7 @@ export function FollowUpSheet({
   const txSum = transactions.reduce((sum, tx) => sum + Number(tx.amount), 0);
 
   const parsedActual = parseFloat(actualInput);
-  const validActual = !isNaN(parsedActual) && parsedActual >= 0;
+  const validActual = !isNaN(parsedActual);
   const diffFromExpected = validActual
     ? parsedActual - item.expected_amount
     : 0;
@@ -119,12 +130,12 @@ export function FollowUpSheet({
     if (isOneTime && oneTimeFutureInterval > 0) {
       return {
         makeRecurringInterval: oneTimeFutureInterval,
-        updateExpectedAmount: amountToUse,
+        updateExpectedAmount: Math.max(0, amountToUse),
       };
     }
     if (!isOneTime && updateFutureExpected && hasAmountDeviation) {
       return {
-        updateExpectedAmount: amountToUse,
+        updateExpectedAmount: Math.max(0, amountToUse),
       };
     }
     return undefined;
@@ -133,7 +144,8 @@ export function FollowUpSheet({
   const handleOneTapConfirm = async () => {
     setSaving(true);
     try {
-      const amountToConfirm = txSum > 0 ? txSum : item.expected_amount;
+      const amountToConfirm =
+        transactions.length > 0 ? txSum : item.expected_amount;
       await onConfirmActual(
         item.id,
         amountToConfirm,
@@ -166,16 +178,23 @@ export function FollowUpSheet({
   const handleAddTx = async (e: React.FormEvent) => {
     e.preventDefault();
     const val = parseFloat(txAmount);
-    if (isNaN(val) || val <= 0) return;
+    if (isNaN(val) || val === 0) return;
     setSaving(true);
     try {
       await onAddTransaction(
         item.id,
         val,
-        txDesc.trim() || (locale === "sv" ? "Delköp" : "Receipt"),
+        txDesc.trim() ||
+          (val < 0
+            ? locale === "sv"
+              ? "Retur / Kredit"
+              : "Refund / Credit"
+            : locale === "sv"
+            ? "Delköp"
+            : "Receipt"),
         txDate || undefined
       );
-      setActualInput(String(txSum + val));
+      setActualInput(String(Math.round((txSum + val) * 100) / 100));
       setTxAmount("");
       setTxDesc("");
     } finally {
@@ -197,22 +216,76 @@ export function FollowUpSheet({
 
         {/* Header */}
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-semibold text-[#057b40]">
-              <span className="rounded-full bg-[#e7f4eb] px-2.5 py-0.5 border border-[#b5e3c4]">
-                {group.name}
-              </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[#282825]">
+              {groups.length > 0 && onQuickMoveGroup ? (
+                <select
+                  value={item.group_id}
+                  onChange={(e) => onQuickMoveGroup(item.id, e.target.value)}
+                  className="cursor-pointer rounded-full bg-[#e7f4eb] px-2.5 py-0.5 text-xs font-bold text-[#282825] border border-[#282825]/35 hover:border-[#282825] focus:outline-none"
+                  title={
+                    locale === "sv"
+                      ? "Flytta post till annan grupp"
+                      : "Move item to another group"
+                  }
+                >
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="rounded-full bg-[#e7f4eb] px-2.5 py-0.5 border border-[#b5e3c4] text-[#282825]">
+                  {group.name}
+                </span>
+              )}
               <span className="inline-flex items-center gap-1 font-mono text-[11px] text-[#64645e]">
                 <CalendarClock className="h-3.5 w-3.5" />
                 {coverageLabel}
               </span>
+              {isOneTime && onToggleUnplannedOneOff && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const refAmt =
+                      record?.actual_amount !== null &&
+                      record?.actual_amount !== undefined
+                        ? Math.max(0, record.actual_amount)
+                        : Math.max(0, parsedActual || item.expected_amount || 0);
+                    onToggleUnplannedOneOff(
+                      item.id,
+                      item.expected_amount > 0,
+                      refAmt
+                    );
+                  }}
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold border transition ${
+                    item.expected_amount === 0
+                      ? "border-[#282825] bg-[#fdeee0] text-[#b85d10] hover:bg-[#faca9e]"
+                      : "border-[#282825]/35 bg-[#e1edfe] text-[#2173be] hover:border-[#282825]"
+                  }`}
+                  title={
+                    locale === "sv"
+                      ? "Växla mellan oförutsedd utgift (0 kr budget) och planerad engångsutgift"
+                      : "Toggle between unplanned one-off (0 budget) and planned one-time expense"
+                  }
+                >
+                  {item.expected_amount === 0
+                    ? locale === "sv"
+                      ? "Oförutsedd (0 kr budget) · Gör planerad"
+                      : "Unplanned (0 budget) · Make planned"
+                    : locale === "sv"
+                    ? "Planerad engångs · Ändra till 0 kr budget"
+                    : "Planned one-off · Set 0 budget"}
+                </button>
+              )}
             </div>
-            <h3 className="mt-1.5 font-serif text-2xl text-[#282825]">
+            <h3 className="mt-1.5 font-serif text-2xl text-[#282825] break-words">
               {item.name}
             </h3>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => onEditItem(computed)}
@@ -257,10 +330,10 @@ export function FollowUpSheet({
             <div className="text-xs font-medium text-[#64645e]">
               {t.summary.actual}
             </div>
-            <div className="mt-0.5 font-serif text-2xl text-[#057b40]">
+            <div className="mt-0.5 font-serif text-2xl text-[#282825]">
               {isConfirmed && record?.actual_amount !== null
                 ? formatCurrency(record.actual_amount, currency, locale)
-                : txSum > 0
+                : transactions.length > 0
                 ? formatCurrency(txSum, currency, locale)
                 : "—"}
             </div>
@@ -269,7 +342,7 @@ export function FollowUpSheet({
                 ? t.status.confirmed
                 : !isPaymentMonth
                 ? t.status.offMonth
-                : txSum > 0
+                : transactions.length > 0
                 ? locale === "sv"
                   ? `${transactions.length} delkvitton loggade`
                   : `${transactions.length} receipts logged`
@@ -319,9 +392,12 @@ export function FollowUpSheet({
                 style={{
                   width: `${Math.min(
                     100,
-                    item.expected_amount > 0
-                      ? (txSum / item.expected_amount) * 100
-                      : 0
+                    Math.max(
+                      0,
+                      item.expected_amount > 0
+                        ? (txSum / item.expected_amount) * 100
+                        : 0
+                    )
                   )}%`,
                 }}
               />
@@ -331,9 +407,11 @@ export function FollowUpSheet({
               <div className="flex gap-2">
                 <input
                   type="number"
+                  step="any"
                   inputMode="decimal"
                   placeholder={locale === "sv" ? "Belopp" : "Amount"}
                   value={txAmount}
+                  onFocus={(e) => e.currentTarget.select()}
                   onChange={(e) => setTxAmount(e.target.value)}
                   className="w-24 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-xs font-semibold text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
                 />
@@ -408,7 +486,7 @@ export function FollowUpSheet({
               className="flex w-full items-center justify-center gap-2 rounded-full border border-[#282825] bg-[#b5e3c4] py-3.5 px-4 text-sm font-bold text-[#282825] shadow-xs hover:bg-[#529a6a] hover:text-white active:scale-[0.99] transition"
             >
               <CheckCircle2 className="h-5 w-5" />
-              {txSum > 0
+              {transactions.length > 0
                 ? `${
                     locale === "sv"
                       ? "Bekräfta kvittosumma"
@@ -436,10 +514,10 @@ export function FollowUpSheet({
                   className={`rounded-full px-2 py-0.5 text-xs font-bold ${
                     group.kind === "income"
                       ? diffFromExpected > 0
-                        ? "bg-[#e7f4eb] text-[#057b40]"
+                        ? "bg-[#e7f4eb] text-[#282825] border border-[#b5e3c4]"
                         : "bg-[#fdeeed] text-[#b81a14]"
                       : diffFromExpected < 0
-                      ? "bg-[#e7f4eb] text-[#057b40]"
+                      ? "bg-[#e7f4eb] text-[#282825] border border-[#b5e3c4]"
                       : "bg-[#fdeee0] text-[#b85d10]"
                   }`}
                 >
@@ -455,6 +533,7 @@ export function FollowUpSheet({
                 inputMode="decimal"
                 step="any"
                 value={actualInput}
+                onFocus={(e) => e.currentTarget.select()}
                 onChange={(e) => setActualInput(e.target.value)}
                 className="flex-1 rounded-full border border-[#282825] bg-white px-4 py-2.5 font-serif text-xl text-[#282825] focus:outline-none"
               />

@@ -123,20 +123,40 @@ export function getCoverageLabel(
   }
 }
 
+export function buildRecordsByMonthMap(
+  records: MonthlyRecord[]
+): Map<string, Map<string, MonthlyRecord>> {
+  const byMonth = new Map<string, Map<string, MonthlyRecord>>();
+  for (const r of records) {
+    let mMap = byMonth.get(r.year_month);
+    if (!mMap) {
+      mMap = new Map<string, MonthlyRecord>();
+      byMonth.set(r.year_month, mMap);
+    }
+    mMap.set(r.item_id, r);
+  }
+  return byMonth;
+}
+
 export function computeMonthlyBudget(
   groups: BudgetGroup[],
   items: BudgetItem[],
   records: MonthlyRecord[],
   yearMonth: string,
   viewMode: ViewMode,
-  locale: Locale
+  locale: Locale,
+  preIndexedRecordMap?: Map<string, MonthlyRecord>,
+  preIndexedGroupMap?: Map<string, BudgetGroup>
 ): ComputedItemMonth[] {
   const [, mStr] = yearMonth.split("-");
   const monthNumber = parseInt(mStr || "1", 10);
-  const groupMap = new Map(groups.map((g) => [g.id, g]));
-  const recordMap = new Map(
-    records.filter((r) => r.year_month === yearMonth).map((r) => [r.item_id, r])
-  );
+  const groupMap =
+    preIndexedGroupMap || new Map(groups.map((g) => [g.id, g]));
+  const recordMap =
+    preIndexedRecordMap ||
+    new Map(
+      records.filter((r) => r.year_month === yearMonth).map((r) => [r.item_id, r])
+    );
 
   return items
     .filter((item) => {
@@ -242,6 +262,9 @@ export function computeGroupOverageStats(
   viewMode: ViewMode = "cashflow",
   locale: Locale = "sv"
 ): Record<string, GroupOverageStat> {
+  const recordsByMonth = buildRecordsByMonthMap(records);
+  const groupMap = new Map(groups.map((g) => [g.id, g]));
+
   const allConfirmedMonths = Array.from(
     new Set(
       records
@@ -266,7 +289,16 @@ export function computeGroupOverageStats(
   if (referenceMonths.length > 0) {
     const sumByGroup: Record<string, number> = {};
     for (const ym of referenceMonths) {
-      const computed = computeMonthlyBudget(groups, items, records, ym, viewMode, locale);
+      const computed = computeMonthlyBudget(
+        groups,
+        items,
+        records,
+        ym,
+        viewMode,
+        locale,
+        recordsByMonth.get(ym) || new Map(),
+        groupMap
+      );
       for (const c of computed) {
         if (c.group.kind !== "expense") continue;
         if (c.displayedActual === null) continue;
@@ -293,7 +325,9 @@ export function computeGroupOverageStats(
     records,
     activeYearMonth,
     viewMode,
-    locale
+    locale,
+    recordsByMonth.get(activeYearMonth) || new Map(),
+    groupMap
   );
   for (const c of activeComputed) {
     if (c.group.kind !== "expense") continue;
@@ -317,6 +351,8 @@ export function computeMultiMonthTrends(
   locale: Locale,
   filterItemId?: string
 ): MonthTrendPoint[] {
+  const recordsByMonth = buildRecordsByMonthMap(records);
+  const groupMap = new Map(groups.map((g) => [g.id, g]));
   const points: MonthTrendPoint[] = [];
   for (let i = monthsCount - 1; i >= 0; i--) {
     const ym = shiftYearMonth(endYearMonth, -i);
@@ -329,7 +365,9 @@ export function computeMultiMonthTrends(
       records,
       ym,
       viewMode,
-      locale
+      locale,
+      recordsByMonth.get(ym) || new Map(),
+      groupMap
     );
 
     let income = 0;

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import * as XLSX from "xlsx";
+import type * as XLSXType from "xlsx";
 import {
   X,
   Upload,
@@ -61,7 +61,7 @@ interface RawTransactionRow {
   yearMonth: string;
   merchantName: string;
   detailNote: string;
-  amount: number; // signed expense/income amount in budget terms (positive = standard for group)
+  amount: number; // signed expense/income amount in budget terms (positive = standard for group, negative = refund/credit)
   isIncome: boolean;
   isRefund: boolean;
   fingerprint: string;
@@ -137,17 +137,20 @@ function parseNumericAmount(raw: unknown): number | null {
   return isNegative ? -num : num;
 }
 
-function ensureFullWorksheetRange(ws: XLSX.WorkSheet) {
+function ensureFullWorksheetRange(
+  ws: XLSXType.WorkSheet,
+  XLSXLib: typeof XLSXType
+) {
   let maxRow = 0;
   let maxCol = 0;
   for (const key of Object.keys(ws)) {
     if (key.startsWith("!")) continue;
-    const cell = XLSX.utils.decode_cell(key);
+    const cell = XLSXLib.utils.decode_cell(key);
     if (cell.r > maxRow) maxRow = cell.r;
     if (cell.c > maxCol) maxCol = cell.c;
   }
   if (maxRow > 0 || maxCol > 0) {
-    ws["!ref"] = XLSX.utils.encode_range({
+    ws["!ref"] = XLSXLib.utils.encode_range({
       s: { r: 0, c: 0 },
       e: { r: maxRow, c: maxCol },
     });
@@ -822,6 +825,8 @@ export function BankImportModal({
     });
   };
 
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+
   if (!open) return null;
 
   const defaultItemId = items[0]?.id || "";
@@ -852,13 +857,13 @@ export function BankImportModal({
         new Set(txList.map((t) => t.yearMonth))
       ).sort();
       const rawTotal = txList.reduce((s, t) => s + t.amount, 0);
-      const totalAmount = Math.max(0, Math.round(rawTotal * 100) / 100);
-      const avgAmount = Math.max(
-        0,
-        Math.round(totalAmount / Math.max(1, distinctMonths.length))
+      // I5: Preserve negative net totals for refunds/credits so they reduce spend by default!
+      const totalAmount = Math.round(rawTotal * 100) / 100;
+      const avgAmount = Math.round(
+        totalAmount / Math.max(1, distinctMonths.length)
       );
       const latestPositive =
-        txList.find((t) => t.amount > 0)?.amount || Math.abs(first.amount);
+        txList.find((t) => t.amount > 0)?.amount || first.amount;
 
       const { item: matchedItem, matchedRule } = matchItemWithRules(
         first.merchantName,
@@ -877,11 +882,11 @@ export function BankImportModal({
         distinctMonths.length >= 2 || knownRecurringPattern;
 
       let defaultAction: MerchantGroupCandidate["actionType"] = "new_once";
-      if (isInternalTransfer || totalAmount === 0) {
+      if (isInternalTransfer || Math.abs(totalAmount) < 0.005) {
         defaultAction = "skip";
       } else if (matchedItem) {
         defaultAction = "existing_item";
-      } else if (isRecurring) {
+      } else if (isRecurring && totalAmount > 0) {
         defaultAction = "new_monthly";
       }
 
@@ -913,7 +918,7 @@ export function BankImportModal({
       if (b.distinctMonths.length !== a.distinctMonths.length) {
         return b.distinctMonths.length - a.distinctMonths.length;
       }
-      return b.totalAmount - a.totalAmount;
+      return Math.abs(b.totalAmount) - Math.abs(a.totalAmount);
     });
 
     setMerchantGroups(groupedCandidates);
@@ -1006,16 +1011,37 @@ export function BankImportModal({
       if (creditCardSignMode) {
         isIncome = false;
         if (rawAmt < 0) {
-          if (/betalning mottagen|inbetalning/i.test(merchantName)) {
+          if (
+            /betalning mottagen|inbetalning|payment received|tack för.*betalning/i.test(
+              merchantName
+            )
+          ) {
             signedExpenseOrIncomeAmt = Math.abs(rawAmt);
           } else {
+            // I5: Credit card merchant refund / return reduces spend by default!
             isRefund = true;
             signedExpenseOrIncomeAmt = -Math.abs(rawAmt);
           }
         }
       } else {
-        isIncome = rawAmt > 0;
-        signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+        if (rawAmt > 0) {
+          const isExplicitRefundOrRetailReturn =
+            /retur|återköp|kreditering|refund|ica |willys|coop|lidl|costco|zara|h&m|arket|boozt|zalando|vinted|ellos|åhléns|ahlens|lindex|kappahl|cubus|polarn|jollyroom|babysam|apotek|lyko|amazon|bauhaus|hornbach|bygghemma|clas ohlson|jula|biltema|kjell|ikea|systembolaget/i.test(
+              `${merchantName} ${detailNote}`
+            );
+          if (isExplicitRefundOrRetailReturn) {
+            // I5: Retail return on bank statement reduces expense spend rather than counting as income!
+            isIncome = false;
+            isRefund = true;
+            signedExpenseOrIncomeAmt = -Math.abs(rawAmt);
+          } else {
+            isIncome = true;
+            signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+          }
+        } else {
+          isIncome = false;
+          signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+        }
       }
 
       const txYearMonth = parsedDate.slice(0, 7);
@@ -1242,6 +1268,7 @@ export function BankImportModal({
     );
   };
 
+  // S2: Dynamically import xlsx on demand so SheetJS is not in the initial bundle!
   const parseSingleFileToGrid = async (file: File): Promise<unknown[][]> => {
     const buffer = await file.arrayBuffer();
     const lowerName = file.name.toLowerCase();
@@ -1254,26 +1281,25 @@ export function BankImportModal({
       return parseCsvTextToRows(text);
     }
 
-    const workbook = XLSX.read(buffer, { type: "array", raw: false });
+    const XLSXLib = await import("xlsx");
+    const workbook = XLSXLib.read(buffer, { type: "array", raw: false });
     const firstSheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[firstSheetName];
-    ensureFullWorksheetRange(worksheet);
+    ensureFullWorksheetRange(worksheet, XLSXLib);
 
-    return XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
+    return XLSXLib.utils.sheet_to_json<unknown[]>(worksheet, {
       header: 1,
       defval: "",
       blankrows: false,
     });
   };
 
-  // F5 + O1: Multi-File Upload & Cross-File + Database Overlap Deduplication!
-  const handleFileChange = async (
-    e: React.ChangeEvent<HTMLInputElement>,
+  // I3 + F5 + O1: Multi-File Batch Processor (used by both File Input and Drag & Drop)
+  const processFilesBatch = async (
+    filesArray: File[],
     appendToExisting = false
   ) => {
-    const fileList = e.target.files;
-    if (!fileList || fileList.length === 0) return;
-    const filesArray = Array.from(fileList);
+    if (filesArray.length === 0) return;
     setErrorMsg(null);
 
     try {
@@ -1283,11 +1309,9 @@ export function BankImportModal({
         setUploadedFiles([file.name]);
         const rows = await parseSingleFileToGrid(file);
         processRawRows(rows);
-        e.target.value = "";
         return;
       }
 
-      // Multi-file merge or append mode
       const seenFingerprints = new Set<string>();
       const combinedTxs: RawTransactionRow[] = [];
       let totalDuplicatesRemoved = 0;
@@ -1347,12 +1371,10 @@ export function BankImportModal({
             .toLowerCase()
             .trim()}::${Math.round(tx.amount * 100)}`;
 
-          // Stage 1: Cross-file overlap deduplication (same date + merchant + amount + per-file occurrence)
           if (seenFingerprints.has(tx.fingerprint)) {
             totalDuplicatesRemoved++;
             continue;
           }
-          // Stage 2: Already-imported database deduplication
           if (
             existingDbFingerprints.has(tx.fingerprint) ||
             existingDbFingerprints.has(monthKey)
@@ -1373,13 +1395,35 @@ export function BankImportModal({
       );
       setAccumulatedRawTxs(combinedTxs);
       groupRawTransactionsIntoCandidates(combinedTxs);
-      e.target.value = "";
     } catch {
       setErrorMsg(
         locale === "sv"
           ? "Kunde inte läsa filen/filerna. Prova .xlsx eller .csv."
           : "Could not parse file(s). Please upload valid .xlsx or .csv files."
       );
+    }
+  };
+
+  const handleFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    appendToExisting = false
+  ) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const filesArray = Array.from(fileList);
+    await processFilesBatch(filesArray, appendToExisting);
+    e.target.value = "";
+  };
+
+  const handleDropFiles = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    const dropped = Array.from(e.dataTransfer.files || []).filter((f) =>
+      /\.(csv|xlsx|xls|txt)$/i.test(f.name)
+    );
+    if (dropped.length > 0) {
+      await processFilesBatch(dropped, merchantGroups.length > 0);
     }
   };
 
@@ -1651,17 +1695,34 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
           )}
         </div>
 
-        {/* Upload Dropzone (F5 Multi-File + O1 Duplicate Guard) */}
-        <div className="mt-3 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[#282825]/40 bg-white p-4 text-center">
+        {/* Upload Dropzone (I3 + F5 Multi-File Batch Drop + O1 Duplicate Guard) */}
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!isDraggingOver) setIsDraggingOver(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDraggingOver(false);
+          }}
+          onDrop={handleDropFiles}
+          className={`mt-3 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-4 text-center transition ${
+            isDraggingOver
+              ? "border-[#282825] bg-[#e7f4eb]"
+              : "border-[#282825]/40 bg-white"
+          }`}
+        >
           <FileSpreadsheet className="h-6 w-6 text-[#057b40] mb-1.5" />
           <p className="text-xs font-semibold text-[#282825] break-words">
             {uploadedFiles.length > 0
               ? locale === "sv"
-                ? `${uploadedFiles.length} fil(er) inlästa`
-                : `${uploadedFiles.length} file(s) loaded`
+                ? `${uploadedFiles.length} fil(er) inlästa (dra & släpp fler för att slå ihop)`
+                : `${uploadedFiles.length} file(s) loaded (drag & drop more to merge)`
               : locale === "sv"
-              ? "Välj en eller flera CSV-/Excel-filer samtidigt (Bank, Amex, Mastercard)"
-              : "Select one or multiple CSV/Excel files at once (Bank, Amex, Mastercard)"}
+              ? "Dra & släpp eller välj en eller flera CSV-/Excel-filer samtidigt (Bank, Amex, Mastercard)"
+              : "Drag & drop or select one or multiple CSV/Excel files at once"}
           </p>
 
           {uploadedFiles.length > 0 && (
@@ -1966,23 +2027,19 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
               {visibleMerchantGroups.map((mg) => {
                 const isExpanded = Boolean(expandedKeys[mg.merchantKey]);
                 const txCount = mg.filteredTxs.length;
-                const filteredSum = Math.max(
-                  0,
+                const filteredSum =
                   Math.round(
                     mg.filteredTxs.reduce((s, t) => s + t.amount, 0) * 100
-                  ) / 100
-                );
+                  ) / 100;
                 const filteredDistinctMonths = Array.from(
                   new Set(mg.filteredTxs.map((t) => t.yearMonth))
                 );
-                const filteredAvg = Math.max(
-                  0,
-                  Math.round(
-                    filteredSum / Math.max(1, filteredDistinctMonths.length)
-                  )
+                const filteredAvg = Math.round(
+                  filteredSum / Math.max(1, filteredDistinctMonths.length)
                 );
                 const isMultiMonthFiltered = filteredDistinctMonths.length > 1;
                 const isRecurringGroup = mg.distinctMonths.length >= 2;
+                const hasRefundTx = mg.filteredTxs.some((t) => t.isRefund);
 
                 return (
                   <div
@@ -2000,11 +2057,7 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                       </h4>
 
                       <div className="text-right shrink-0">
-                        <div
-                          className={`font-serif text-lg leading-none ${
-                            mg.isIncome ? "text-[#057b40]" : "text-[#282825]"
-                          }`}
-                        >
+                        <div className="font-serif text-lg leading-none text-[#282825]">
                           {mg.isIncome ? "+" : ""}
                           {formatCurrency(
                             isMultiMonthFiltered ? filteredAvg : filteredSum,
@@ -2031,12 +2084,20 @@ Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på d
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
                           mg.isIncome
-                            ? "bg-[#e7f4eb] text-[#057b40]"
+                            ? "bg-[#e7f4eb] text-[#282825] border border-[#b5e3c4]"
                             : "bg-[#fdeee0] text-[#b85d10]"
                         }`}
                       >
                         {mg.suggestedCategoryLabel}
                       </span>
+
+                      {hasRefundTx && (
+                        <span className="rounded-full bg-[#e7f4eb] border border-[#282825]/30 px-2 py-0.5 text-[10px] font-bold text-[#282825]">
+                          {locale === "sv"
+                            ? "Retur / Kredit (minskar utgift)"
+                            : "Refund / Credit (reduces spend)"}
+                        </span>
+                      )}
 
                       {isRecurringGroup && (
                         <span className="inline-flex items-center gap-0.5 rounded-full bg-[#e1edfe] px-2 py-0.5 text-[10px] font-bold text-[#2173be]">

@@ -152,51 +152,83 @@ export function InsightsView({
 
     const rows = activeExpenseItems.map((it) => {
       const interval = it.recurrence_interval_months || 1;
-      // Check latest confirmed record for this item
       const itemRecords = records
-        .filter((r) => r.item_id === it.id && r.status === "confirmed" && r.actual_amount !== null)
+        .filter(
+          (r) =>
+            r.item_id === it.id &&
+            r.status === "confirmed" &&
+            r.actual_amount !== null &&
+            Number(r.actual_amount) > 0
+        )
         .sort((a, b) => b.year_month.localeCompare(a.year_month));
       const latestRec = itemRecords[0];
-      const prevRec = itemRecords[1];
+      const olderRec =
+        itemRecords.find(
+          (r) =>
+            latestRec &&
+            Math.round(Number(r.actual_amount)) !==
+              Math.round(Number(latestRec.actual_amount))
+        ) || itemRecords[1];
+
       const currentCost =
         latestRec && latestRec.actual_amount !== null
           ? Number(latestRec.actual_amount)
           : it.expected_amount;
+
+      const referenceOldCost =
+        olderRec && olderRec.actual_amount !== null
+          ? Number(olderRec.actual_amount)
+          : it.expected_amount;
+
       const monthlyEq = currentCost / interval;
       const annualCost = monthlyEq * 12;
-      const priceIncreased =
-        latestRec &&
-        latestRec.actual_amount !== null &&
-        Number(latestRec.actual_amount) >
-          (prevRec?.actual_amount !== null && prevRec?.actual_amount !== undefined
-            ? Number(prevRec.actual_amount)
-            : it.expected_amount) +
-            1;
-      const increaseDiff = priceIncreased
-        ? Number(latestRec!.actual_amount) -
-          (prevRec?.actual_amount !== null && prevRec?.actual_amount !== undefined
-            ? Number(prevRec.actual_amount)
-            : it.expected_amount)
-        : 0;
+
+      const increaseDiff =
+        latestRec && currentCost > referenceOldCost + 1
+          ? currentCost - referenceOldCost
+          : 0;
+      const priceIncreased = increaseDiff > 0;
+      const increasePct =
+        priceIncreased && referenceOldCost > 0
+          ? Math.round((increaseDiff / referenceOldCost) * 100)
+          : 0;
+      const needsBaselineSync =
+        priceIncreased && Math.round(currentCost) !== Math.round(it.expected_amount);
 
       return {
         item: it,
+        currentCost,
+        referenceOldCost,
         monthlyEq,
         annualCost,
-        priceIncreased: Boolean(priceIncreased),
+        priceIncreased,
         increaseDiff,
+        increasePct,
+        needsBaselineSync,
       };
     });
 
-    rows.sort((a, b) => b.annualCost - a.annualCost);
+    rows.sort((a, b) => {
+      if (a.priceIncreased && !b.priceIncreased) return -1;
+      if (!a.priceIncreased && b.priceIncreased) return 1;
+      return b.annualCost - a.annualCost;
+    });
 
     const totalMonthly = rows.reduce((s, r) => s + r.monthlyEq, 0);
     const totalAnnual = rows.reduce((s, r) => s + r.annualCost, 0);
+    const creptItems = rows.filter((r) => r.priceIncreased);
+    const totalAnnualCreep = creptItems.reduce(
+      (s, r) =>
+        s + (r.increaseDiff / (r.item.recurrence_interval_months || 1)) * 12,
+      0
+    );
 
     return {
       rows,
       totalMonthly,
       totalAnnual,
+      creptItems,
+      totalAnnualCreep,
     };
   }, [items, groups, records, subRadarFilter]);
 
@@ -578,6 +610,49 @@ export function InsightsView({
           </div>
         </div>
 
+        {/* I4: Price-Creep Detector Alert Banner */}
+        {subscriptionRadar.creptItems.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#eb5b55] bg-[#fdeeed] px-3.5 py-2.5 text-xs text-[#282825]">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertTriangle className="h-4 w-4 text-[#b81a14] shrink-0" />
+              <span className="font-semibold leading-snug">
+                {locale === "sv"
+                  ? `${subscriptionRadar.creptItems.length} abonnemang/avtal har smyghöjts (+${formatCurrency(
+                      Math.round(subscriptionRadar.totalAnnualCreep),
+                      currency,
+                      locale
+                    )}/år)`
+                  : `${subscriptionRadar.creptItems.length} subscriptions/contracts increased (+${formatCurrency(
+                      Math.round(subscriptionRadar.totalAnnualCreep),
+                      currency,
+                      locale
+                    )}/yr)`}
+              </span>
+            </div>
+            {onUpdateItemExpectedAmount &&
+              subscriptionRadar.creptItems.some((c) => c.needsBaselineSync) && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    for (const c of subscriptionRadar.creptItems) {
+                      if (c.needsBaselineSync) {
+                        await onUpdateItemExpectedAmount(
+                          c.item.id,
+                          Math.round(c.currentCost)
+                        );
+                      }
+                    }
+                  }}
+                  className="shrink-0 rounded-full border border-[#282825] bg-white px-2.5 py-1 text-[11px] font-bold text-[#282825] hover:bg-[#fbc8c5] transition"
+                >
+                  {locale === "sv"
+                    ? "Uppdatera alla budgetar"
+                    : "Sync all baselines"}
+                </button>
+              )}
+          </div>
+        )}
+
         {/* Subscription Rows */}
         <div className="max-h-72 overflow-y-auto space-y-1.5 pr-1">
           {subscriptionRadar.rows.map((r) => (
@@ -600,22 +675,55 @@ export function InsightsView({
                           currency,
                           locale
                         )}
+                        {r.increasePct > 0 ? ` (+${r.increasePct}%)` : ""}
                       </span>
                     </span>
                   )}
                 </div>
                 <div className="font-mono text-[10px] text-[#64645e]">
-                  {formatCurrency(Math.round(r.monthlyEq), currency, locale)}/
-                  {locale === "sv" ? "mån" : "mo"}
+                  {r.priceIncreased ? (
+                    <span>
+                      {locale === "sv" ? "Tidigare" : "Was"}{" "}
+                      {formatCurrency(
+                        Math.round(r.referenceOldCost),
+                        currency,
+                        locale
+                      )}{" "}
+                      → {locale === "sv" ? "Nu" : "Now"}{" "}
+                      {formatCurrency(Math.round(r.monthlyEq), currency, locale)}/
+                      {locale === "sv" ? "mån" : "mo"}
+                    </span>
+                  ) : (
+                    <span>
+                      {formatCurrency(Math.round(r.monthlyEq), currency, locale)}/
+                      {locale === "sv" ? "mån" : "mo"}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              <div className="text-right shrink-0">
-                <div className="font-mono text-xs font-bold text-[#282825]">
-                  {formatCurrency(Math.round(r.annualCost), currency, locale)}
-                  <span className="font-sans text-[10px] font-normal text-[#64645e]">
-                    /{locale === "sv" ? "år" : "yr"}
-                  </span>
+              <div className="flex items-center gap-2 shrink-0">
+                {r.needsBaselineSync && onUpdateItemExpectedAmount && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onUpdateItemExpectedAmount(
+                        r.item.id,
+                        Math.round(r.currentCost)
+                      )
+                    }
+                    className="rounded-full border border-[#282825] bg-white px-2.5 py-1 text-[10px] font-bold text-[#282825] hover:bg-[#e7f4eb] transition"
+                  >
+                    {locale === "sv" ? "Sätt som budget" : "Set baseline"}
+                  </button>
+                )}
+                <div className="text-right">
+                  <div className="font-mono text-xs font-bold text-[#282825]">
+                    {formatCurrency(Math.round(r.annualCost), currency, locale)}
+                    <span className="font-sans text-[10px] font-normal text-[#64645e]">
+                      /{locale === "sv" ? "år" : "yr"}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
