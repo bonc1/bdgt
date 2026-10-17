@@ -641,72 +641,275 @@ export default function BudgetAppPage() {
     );
   };
 
-  const handleImportRows = async (rows: ImportedRowAction[]) => {
-    // Group existing_item rows by targetItemId so multiple receipts (e.g. ICA + Willys) sum cleanly
-    const byTargetItem = new Map<string, ImportedRowAction[]>();
+  const upsertImportedMonthRecord = async (
+    itemId: string,
+    targetYM: string,
+    expectedSnapshot: number,
+    monthRows: ImportedRowAction[]
+  ) => {
+    const monthSum = monthRows.reduce((s, r) => s + r.amount, 0);
+    const noteText =
+      monthRows.length === 1
+        ? `Import: ${monthRows[0].description} (${monthRows[0].date})`
+        : `Import: ${monthRows.length} transaktioner`;
 
-    for (const row of rows) {
-      if (row.actionType === "skip") continue;
+    const subTxs =
+      monthRows.length > 1
+        ? monthRows.map((r, idx) => ({
+            id: `tx-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
+            household_id: household.id,
+            monthly_record_id: "",
+            amount: r.amount,
+            description: r.description,
+            spent_on: r.date,
+          }))
+        : [];
+
+    if (userId && dbReady) {
+      const { data: recData } = await supabase
+        .from("monthly_records")
+        .upsert(
+          {
+            household_id: household.id,
+            item_id: itemId,
+            year_month: targetYM,
+            expected_snapshot: expectedSnapshot,
+            actual_amount: monthSum,
+            status: "confirmed",
+            notes: noteText,
+            confirmed_by: userId,
+            confirmed_at: new Date().toISOString(),
+          },
+          { onConflict: "item_id,year_month" }
+        )
+        .select()
+        .single();
+
+      if (recData) {
+        const insertedTxs: NonNullable<MonthlyRecord["transactions"]> = [];
+        if (monthRows.length > 1) {
+          for (const r of monthRows) {
+            const { data: txRow } = await supabase
+              .from("record_transactions")
+              .insert({
+                household_id: household.id,
+                monthly_record_id: recData.id,
+                amount: r.amount,
+                description: r.description,
+                spent_on: r.date,
+                created_by: userId,
+              })
+              .select()
+              .single();
+            if (txRow) insertedTxs.push(txRow);
+          }
+        }
+
+        setRecords((prev) => [
+          ...prev.filter(
+            (r) => !(r.item_id === itemId && r.year_month === targetYM)
+          ),
+          {
+            ...(recData as MonthlyRecord),
+            expected_snapshot: Number(recData.expected_snapshot),
+            actual_amount: Number(recData.actual_amount),
+            transactions: insertedTxs,
+          },
+        ]);
+        return;
+      }
+    }
+
+    const recId = `rec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const localRec: MonthlyRecord = {
+      id: recId,
+      household_id: household.id,
+      item_id: itemId,
+      year_month: targetYM,
+      expected_snapshot: expectedSnapshot,
+      actual_amount: monthSum,
+      status: "confirmed",
+      notes: noteText,
+      confirmed_at: new Date().toISOString(),
+      transactions: subTxs.map((t) => ({ ...t, monthly_record_id: recId })),
+    };
+
+    setRecords((prev) => [
+      ...prev.filter(
+        (r) => !(r.item_id === itemId && r.year_month === targetYM)
+      ),
+      localRec,
+    ]);
+  };
+
+  const handleImportRows = async (rows: ImportedRowAction[]) => {
+    const activeRows = rows.filter((r) => r.actionType !== "skip");
+    if (activeRows.length === 0) return;
+
+    // 1. Group new items (new_monthly & new_once) by merchantKey so each merchant creates only ONE BudgetItem
+    const newMerchantMap = new Map<string, ImportedRowAction[]>();
+    // 2. Group existing_item rows by targetItemId
+    const existingItemMap = new Map<string, ImportedRowAction[]>();
+
+    for (const row of activeRows) {
       if (row.actionType === "existing_item" && row.targetItemId) {
-        const list = byTargetItem.get(row.targetItemId) || [];
+        const list = existingItemMap.get(row.targetItemId) || [];
         list.push(row);
-        byTargetItem.set(row.targetItemId, list);
+        existingItemMap.set(row.targetItemId, list);
       } else if (
-        (row.actionType === "new_once" || row.actionType === "new_monthly") &&
+        (row.actionType === "new_monthly" || row.actionType === "new_once") &&
         row.targetGroupId
       ) {
-        const [, mStr] = yearMonth.split("-");
+        const key = row.merchantKey || `${row.actionType}::${row.description}`;
+        const list = newMerchantMap.get(key) || [];
+        list.push(row);
+        newMerchantMap.set(key, list);
+      }
+    }
+
+    const newlyCreatedRules = [...(household.merchant_rules || [])];
+    let rulesAdded = false;
+
+    // Process each unique new merchant group once
+    for (const [, merchantRows] of newMerchantMap.entries()) {
+      const sample = merchantRows[0];
+      const targetGroupId = sample.targetGroupId!;
+      const isOnce = sample.actionType === "new_once";
+
+      // Group this merchant's rows by YYYY-MM
+      const byMonth = new Map<string, ImportedRowAction[]>();
+      for (const r of merchantRows) {
+        const ym = r.yearMonth || r.date.slice(0, 7) || yearMonth;
+        const mList = byMonth.get(ym) || [];
+        mList.push(r);
+        byMonth.set(ym, mList);
+      }
+
+      const sortedMonths = Array.from(byMonth.keys()).sort();
+      const latestMonth = sortedMonths[sortedMonths.length - 1] || yearMonth;
+      const latestMonthRows = byMonth.get(latestMonth) || merchantRows;
+      const latestMonthSum = latestMonthRows.reduce((s, r) => s + r.amount, 0);
+
+      // Check if an item with this exact name already exists in the household
+      const existingSameName = items.find(
+        (i) =>
+          i.name.toLowerCase().trim() ===
+          sample.description.toLowerCase().trim()
+      );
+
+      let itemIdToUse = existingSameName?.id;
+
+      if (!itemIdToUse) {
+        const [, mStr] = latestMonth.split("-");
         const activeM = parseInt(mStr || "1", 10);
-        await handleSaveItem(
-          {
-            name: row.description,
-            group_id: row.targetGroupId,
-            expected_amount: row.amount,
-            entry_mode: "single_bill",
-            recurrence_interval_months:
-              row.actionType === "new_once" ? 0 : 1,
-            one_time_year_month:
-              row.actionType === "new_once" ? yearMonth : null,
-            anchor_month: activeM,
-            coverage_months: 1,
-            is_variable_estimate: false,
-            cost_split: "shared",
-          },
-          undefined,
-          row.amount
+        const itemData: Omit<
+          BudgetItem,
+          "id" | "household_id" | "sort_order" | "is_active"
+        > = {
+          name: sample.description,
+          group_id: targetGroupId,
+          expected_amount: Math.round(latestMonthSum),
+          entry_mode: latestMonthRows.length > 1 ? "multi_entry" : "single_bill",
+          recurrence_interval_months: isOnce ? 0 : 1,
+          one_time_year_month: isOnce ? latestMonth : null,
+          anchor_month: activeM,
+          coverage_months: 1,
+          is_variable_estimate: false,
+          cost_split: "shared",
+        };
+
+        let createdId = `itm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        if (userId && dbReady) {
+          const { data: inserted } = await supabase
+            .from("budget_items")
+            .insert({
+              ...itemData,
+              household_id: household.id,
+              is_active: true,
+              sort_order: items.length + 1,
+            })
+            .select()
+            .single();
+          if (inserted) {
+            createdId = inserted.id;
+            setItems((prev) => [...prev, inserted as BudgetItem]);
+          } else {
+            setItems((prev) => [
+              ...prev,
+              {
+                ...itemData,
+                id: createdId,
+                household_id: household.id,
+                is_active: true,
+                sort_order: prev.length + 1,
+              },
+            ]);
+          }
+        } else {
+          setItems((prev) => [
+            ...prev,
+            {
+              ...itemData,
+              id: createdId,
+              household_id: household.id,
+              is_active: true,
+              sort_order: prev.length + 1,
+            },
+          ]);
+        }
+        itemIdToUse = createdId;
+      }
+
+      // Save a smart rule so future imports automatically match this item
+      const cleanPat = sample.description.toLowerCase().trim();
+      if (
+        cleanPat.length >= 2 &&
+        !newlyCreatedRules.some((r) => r.pattern.toLowerCase() === cleanPat)
+      ) {
+        newlyCreatedRules.push({
+          id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          pattern: cleanPat,
+          targetItemId: itemIdToUse,
+        });
+        rulesAdded = true;
+      }
+
+      // Upsert monthly records for every month present in this merchant's rows
+      for (const [ym, mRows] of byMonth.entries()) {
+        await upsertImportedMonthRecord(
+          itemIdToUse,
+          ym,
+          Math.round(latestMonthSum),
+          mRows
         );
       }
     }
 
-    for (const [targetItemId, itemRows] of byTargetItem.entries()) {
+    // Process rows matched to existing items (grouped by item and month)
+    for (const [targetItemId, itemRows] of existingItemMap.entries()) {
       const target = items.find((i) => i.id === targetItemId);
       if (!target) continue;
-      const existingRec = records.find(
-        (r) => r.item_id === targetItemId && r.year_month === yearMonth
-      );
-      const hasExistingTxs = (existingRec?.transactions?.length || 0) > 0;
 
-      if (
-        itemRows.length === 1 &&
-        target.entry_mode === "single_bill" &&
-        !hasExistingTxs
-      ) {
-        const only = itemRows[0];
-        await handleConfirmActual(
-          target.id,
-          only.amount,
-          `Import: ${only.description}`
-        );
-      } else {
-        for (const r of itemRows) {
-          await handleAddTransaction(
-            target.id,
-            r.amount,
-            r.description,
-            r.date
-          );
-        }
+      const byMonth = new Map<string, ImportedRowAction[]>();
+      for (const r of itemRows) {
+        const ym = r.yearMonth || r.date.slice(0, 7) || yearMonth;
+        const mList = byMonth.get(ym) || [];
+        mList.push(r);
+        byMonth.set(ym, mList);
       }
+
+      for (const [ym, mRows] of byMonth.entries()) {
+        await upsertImportedMonthRecord(
+          target.id,
+          ym,
+          target.expected_amount,
+          mRows
+        );
+      }
+    }
+
+    if (rulesAdded) {
+      await handleUpdateHousehold({ merchant_rules: newlyCreatedRules });
     }
   };
 

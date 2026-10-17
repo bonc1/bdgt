@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import * as XLSX from "xlsx";
 import {
   X,
@@ -15,6 +15,8 @@ import {
   ChevronDown,
   ChevronRight,
   SlidersHorizontal,
+  Repeat,
+  Calendar,
 } from "lucide-react";
 import {
   BudgetGroup,
@@ -26,8 +28,11 @@ import { formatCurrency } from "@/lib/i18n";
 
 export interface ImportedRowAction {
   date: string;
+  yearMonth: string; // YYYY-MM derived from transaction date
   description: string;
+  merchantKey: string;
   amount: number;
+  isIncome: boolean;
   actionType: "existing_item" | "new_once" | "new_monthly" | "skip";
   targetItemId?: string;
   targetGroupId?: string;
@@ -48,15 +53,29 @@ interface BankImportModalProps {
   onSaveMerchantRules: (rules: MerchantRule[]) => Promise<void>;
 }
 
-interface ParsedCandidate {
+interface RawTransactionRow {
   id: string;
   date: string;
-  description: string;
-  amount: number;
-  rawSignedAmount: number;
+  yearMonth: string;
+  merchantName: string;
+  detailNote: string;
+  amount: number; // positive absolute amount
+  rawSignedAmount: number; // negative for expense, positive for income
+}
+
+interface MerchantGroupCandidate {
+  merchantKey: string;
+  displayName: string;
+  transactions: RawTransactionRow[];
+  distinctMonths: string[];
+  isIncome: boolean;
+  avgAmount: number;
+  latestAmount: number;
+  totalAmount: number;
   actionType: "existing_item" | "new_once" | "new_monthly" | "skip";
   targetItemId: string;
   targetGroupId: string;
+  suggestedCategoryLabel: string;
   matchedRulePattern?: string;
   rememberRule: boolean;
   rulePattern: string;
@@ -77,10 +96,8 @@ function parseNumericAmount(raw: unknown): number | null {
   let str = String(raw).trim();
   if (!str) return null;
 
-  // Normalize all Unicode minus/dash characters to standard ASCII '-'
   str = str.replace(/[\u2212\u2012\u2013\u2014\uFE63\uFF0D−–—]/g, "-");
 
-  // Detect accounting parentheses e.g. (123,45) or trailing minus e.g. 123,45-
   let isNegative = false;
   if (/^\(.*\)$/.test(str)) {
     isNegative = true;
@@ -95,29 +112,22 @@ function parseNumericAmount(raw: unknown): number | null {
     str = str.slice(1);
   }
 
-  // Strip currency symbols and all whitespace (including non-breaking spaces)
   str = str
     .replace(/[\u00A0\u202F\s]+/g, "")
     .replace(/kr|SEK|EUR|USD|NOK|DKK|GBP/gi, "");
 
-  // Handle thousand separators vs decimal separator:
-  // If both '.' and ',' exist: whichever comes last is the decimal separator
   const lastComma = str.lastIndexOf(",");
   const lastDot = str.lastIndexOf(".");
   if (lastComma !== -1 && lastDot !== -1) {
     if (lastComma > lastDot) {
-      // 1.234,56 -> 1234.56
       str = str.replace(/\./g, "").replace(",", ".");
     } else {
-      // 1,234.56 -> 1234.56
       str = str.replace(/,/g, "");
     }
   } else if (lastComma !== -1) {
-    // Only comma present: in Swedish/European exports comma is decimal separator
     str = str.replace(",", ".");
   }
 
-  // Strip any remaining non-numeric chars except '.'
   str = str.replace(/[^0-9.]/g, "");
   if (!str) return null;
 
@@ -126,10 +136,6 @@ function parseNumericAmount(raw: unknown): number | null {
   return isNegative ? -num : num;
 }
 
-/**
- * Fix truncated worksheet '!ref' range in bank .xlsx exports (e.g. Swedbank / Sparbanken)
- * where <dimension ref="A1:L2"/> is written in XML even though hundreds of rows exist.
- */
 function ensureFullWorksheetRange(ws: XLSX.WorkSheet) {
   let maxRow = 0;
   let maxCol = 0;
@@ -147,9 +153,6 @@ function ensureFullWorksheetRange(ws: XLSX.WorkSheet) {
   }
 }
 
-/**
- * Parse CSV text directly (handles comma, semicolon, tab, quotes, and Swedish encodings)
- */
 function parseCsvTextToRows(text: string): string[][] {
   const lines = text
     .replace(/\r\n/g, "\n")
@@ -159,8 +162,7 @@ function parseCsvTextToRows(text: string): string[][] {
 
   if (lines.length === 0) return [];
 
-  // Detect delimiter by checking the first 10 lines
-  const sampleLines = lines.slice(0, Math.min(10, lines.length));
+  const sampleLines = lines.slice(0, Math.min(12, lines.length));
   let bestDelim = ",";
   let bestCount = 0;
   for (const delim of [";", ",", "\t"]) {
@@ -197,6 +199,55 @@ function parseCsvTextToRows(text: string): string[][] {
   });
 }
 
+/**
+ * Clean & normalize Sparbanken Referens + Beskrivning into a canonical Merchant Name
+ */
+function buildCleanMerchantName(
+  primaryRef: string,
+  secondaryDesc: string
+): { merchantName: string; detailNote: string } {
+  const cleanRef = primaryRef.replace(/^[,.\s]+|[,.\s]+$/g, "").trim();
+  const cleanDesc = secondaryDesc.replace(/^[,.\s]+|[,.\s]+$/g, "").trim();
+
+  // If Referens is empty, use Beskrivning
+  if (!cleanRef && cleanDesc) {
+    return { merchantName: cleanDesc, detailNote: "" };
+  }
+  if (cleanRef && !cleanDesc) {
+    return { merchantName: cleanRef, detailNote: "" };
+  }
+  if (cleanRef.toLowerCase() === cleanDesc.toLowerCase()) {
+    return { merchantName: cleanRef, detailNote: "" };
+  }
+
+  // In Sparbanken, if Referens is a long numeric ID (e.g. "1988123040311281" for Barnbidrag/Dagersättning,
+  // or "831398258548919" for Överföring lån, or "831395143459435" for Överföring via internet),
+  // Beskrivning is the actual human-readable category!
+  if (/^\d{7,}$/.test(cleanRef.replace(/[\s-]/g, "")) && cleanDesc) {
+    return { merchantName: cleanDesc, detailNote: cleanRef };
+  }
+  if (/^\d{7,}$/.test(cleanDesc.replace(/[\s-]/g, "")) && cleanRef) {
+    return { merchantName: cleanRef, detailNote: cleanDesc };
+  }
+
+  const genericLabels = [
+    "kortköp",
+    "autogiro",
+    "betalning",
+    "bankgiro",
+    "plusgiro",
+    "swish",
+  ];
+  if (genericLabels.includes(cleanRef.toLowerCase()) && cleanDesc) {
+    return { merchantName: cleanDesc, detailNote: cleanRef };
+  }
+  if (genericLabels.includes(cleanDesc.toLowerCase()) && cleanRef) {
+    return { merchantName: cleanRef, detailNote: cleanDesc };
+  }
+
+  return { merchantName: cleanRef, detailNote: cleanDesc };
+}
+
 function extractCleanMerchantKeyword(desc: string): string {
   const cleaned = desc
     .toLowerCase()
@@ -212,12 +263,170 @@ function extractCleanMerchantKeyword(desc: string): string {
   return words.slice(0, 2).join(" ");
 }
 
+/**
+ * Suggest the best BudgetGroup and human category hint for a Swedish/Nordic merchant
+ */
+function suggestGroupAndCategory(
+  merchantName: string,
+  isIncome: boolean,
+  groups: BudgetGroup[],
+  locale: Locale
+): { groupId: string; categoryHint: string; isInternalTransfer: boolean } {
+  const lower = merchantName.toLowerCase();
+
+  const incomeGroup =
+    groups.find((g) => g.kind === "income") || groups[0];
+  const savingsGroup =
+    groups.find((g) => g.kind === "savings") ||
+    groups.find((g) => /spar|invest|buffert/i.test(g.name)) ||
+    groups[0];
+  const housingGroup =
+    groups.find((g) => /boende|drift|housing|hem|fast/i.test(g.name)) ||
+    groups.find((g) => g.kind === "expense") ||
+    groups[0];
+  const transportInsGroup =
+    groups.find((g) => /transport|försäkring|bil|insurance/i.test(g.name)) ||
+    housingGroup;
+  const dailyGroup =
+    groups.find((g) => /mat|vardag|rörlig|grocer|daily|nöje/i.test(g.name)) ||
+    groups.find((g) => g.kind === "expense") ||
+    groups[0];
+
+  // 1. Detect internal account transfers ("Överföring via internet", "Överföring", "Insättning")
+  // Note: "Överföring lån" is a mortgage/loan payment, NOT an internal skip transfer!
+  if (
+    /^(överföring via internet|överföring|insättning|egen överföring)$/i.test(
+      lower
+    )
+  ) {
+    return {
+      groupId: isIncome ? incomeGroup.id : dailyGroup.id,
+      categoryHint:
+        locale === "sv" ? "Intern överföring" : "Internal transfer",
+      isInternalTransfer: true,
+    };
+  }
+
+  // 2. Income items (Lön, Barnbidrag, Dagersättning, Skatteverket, Ers skada)
+  if (
+    isIncome ||
+    /lön|barnbidrag|dagersättning|föräldrapenning|försäkringskassan|ers skada|återbäring|utdelning/.test(
+      lower
+    )
+  ) {
+    return {
+      groupId: incomeGroup.id,
+      categoryHint: locale === "sv" ? "Inkomst" : "Income",
+      isInternalTransfer: false,
+    };
+  }
+
+  // 3. Savings & Investments (Avanza, Månadsspar, LF Fondliv, Nordnet, Lysa)
+  if (
+    /avanza|nordnet|månadsspar|fondliv|lysa|opti|isk|sparande|bospar/.test(
+      lower
+    )
+  ) {
+    return {
+      groupId: savingsGroup.id,
+      categoryHint:
+        locale === "sv" ? "Sparande & Investering" : "Savings & Investment",
+      isInternalTransfer: false,
+    };
+  }
+
+  // 4. Housing, Loans, Electricity, Broadband, Security, Municipality
+  if (
+    /överföring lån|bolån|sbab|landshypotek|e\.on|eon|vattenfall|ellevio|tibber|fortum|skånska energi|telia|telenor|bahnhof|tele2|tre |verisure|sector alarm|kävlinge kommun|kommun|hsb|riksbyggen|hyra|badrum/.test(
+      lower
+    )
+  ) {
+    const subHint = /lån|bolån/.test(lower)
+      ? locale === "sv"
+        ? "Bolån / Lån"
+        : "Loan / Mortgage"
+      : /e\.on|vattenfall|ellevio|tibber|fortum/.test(lower)
+      ? locale === "sv"
+        ? "El & Energi"
+        : "Electricity"
+      : /telia|telenor|bahnhof|tele2/.test(lower)
+      ? locale === "sv"
+        ? "Bredband & Telefoni"
+        : "Broadband & Phone"
+      : locale === "sv"
+      ? "Boende & Drift"
+      : "Housing & Utilities";
+
+    return {
+      groupId: housingGroup.id,
+      categoryHint: subHint,
+      isInternalTransfer: false,
+    };
+  }
+
+  // 5. Insurance, Car, CSN, Loans, Transit
+  if (
+    /lf motor|lf skåne|länsförsäkringar|swedb försäk|tre kronor|if skade|trygg-hansa|folksam|hedvig|moderna|santander|csn|parkster|easypark|aimo|transportstyrels|skånetrafiken|sl |västtrafik|circle k|okq8|preem/.test(
+      lower
+    )
+  ) {
+    const subHint = /lf |försäk|tre kronor|trygg|folksam|hedvig/.test(lower)
+      ? locale === "sv"
+        ? "Försäkring"
+        : "Insurance"
+      : /csn|santander/.test(lower)
+      ? locale === "sv"
+        ? "Lån & CSN"
+        : "Loans & CSN"
+      : locale === "sv"
+      ? "Transport & Bil"
+      : "Transport & Car";
+
+    return {
+      groupId: transportInsGroup.id,
+      categoryHint: subHint,
+      isInternalTransfer: false,
+    };
+  }
+
+  // 6. Union, A-kassa, Gym, Charity, Healthcare, Credit Cards, Groceries
+  const subHint = /sv ingenj|union|akassa|a-kassa|fack/.test(lower)
+    ? locale === "sv"
+      ? "Fack & A-kassa"
+      : "Union & Unemployment"
+    : /nordicwell|sats|friskis|gym|träning/.test(lower)
+    ? locale === "sv"
+      ? "Träning & Hälsa"
+      : "Fitness & Health"
+    : /seb kort|american express|amex|mastercard|kort/.test(lower)
+    ? locale === "sv"
+      ? "Kreditkortsfaktura"
+      : "Credit Card Bill"
+    : /rädda barnen|unicef|röda korset|gåva/.test(lower)
+    ? locale === "sv"
+      ? "Välgörenhet"
+      : "Charity"
+    : /region skåne|folktandvård|vård|apotek/.test(lower)
+    ? locale === "sv"
+      ? "Vård & Tandvård"
+      : "Healthcare"
+    : locale === "sv"
+    ? "Mat & Vardag"
+    : "Daily & Other";
+
+  return {
+    groupId: dailyGroup.id,
+    categoryHint: subHint,
+    isInternalTransfer: false,
+  };
+}
+
 function matchItemWithRules(
-  desc: string,
+  merchantName: string,
   items: BudgetItem[],
   rules: MerchantRule[]
 ): { item?: BudgetItem; matchedRule?: MerchantRule } {
-  const lower = desc.toLowerCase();
+  const lower = merchantName.toLowerCase();
 
   // 1. Check user's saved Smart Merchant Rules first
   for (const rule of rules) {
@@ -230,97 +439,48 @@ function matchItemWithRules(
     }
   }
 
-  // 2. Direct substring match with item name
+  // 2. Direct substring match with existing BudgetItem name
   for (const it of items) {
-    const firstWord = it.name.toLowerCase().split(/[\s/(&-]+/)[0];
+    const itemLower = it.name.toLowerCase();
+    if (itemLower === lower) return { item: it };
+    const firstWord = itemLower.split(/[\s/(&,-]+/)[0];
     if (firstWord && firstWord.length >= 3 && lower.includes(firstWord)) {
       return { item: it };
     }
   }
 
-  // 3. Built-in Nordic merchant heuristics
-  const groceryKeywords = [
-    "ica",
-    "willys",
-    "coop",
-    "hemköp",
-    "lidl",
-    "city gross",
-    "mathem",
-    "systembolaget",
-  ];
-  if (groceryKeywords.some((k) => lower.includes(k))) {
+  // 3. Built-in matchers for default starter items
+  if (/^lön$/i.test(lower)) {
+    return {
+      item: items.find((i) => /lön|salary/i.test(i.name)),
+    };
+  }
+  if (/e\.on|eon|vattenfall|ellevio|tibber|fortum/.test(lower)) {
+    return {
+      item: items.find((i) => /\bel|elräkning|electr/i.test(i.name)),
+    };
+  }
+  if (/telia|telenor|bahnhof/.test(lower)) {
+    return {
+      item: items.find((i) => /bredband|broadband|fiber|mobil/i.test(i.name)),
+    };
+  }
+  if (/överföring lån|bolån/.test(lower)) {
+    return {
+      item: items.find((i) => /boendekostnad|bolån|hyra|mortgage/i.test(i.name)),
+    };
+  }
+  if (/avanza|månadsspar|nordnet/.test(lower)) {
+    return {
+      item: items.find((i) => /månadsspar|sparande|isk|buffer/i.test(i.name)),
+    };
+  }
+  if (/ica|willys|coop|hemköp|lidl|mathem/.test(lower)) {
     return {
       item: items.find(
         (i) =>
           i.entry_mode === "multi_entry" ||
-          i.name.toLowerCase().includes("mat") ||
-          i.name.toLowerCase().includes("grocer")
-      ),
-    };
-  }
-
-  const diningKeywords = [
-    "espresso house",
-    "foodora",
-    "wolt",
-    "uber eats",
-    "mcdonald",
-    "max ",
-    "restaurang",
-    "cafe",
-    "kaffe",
-  ];
-  if (diningKeywords.some((k) => lower.includes(k))) {
-    return {
-      item: items.find(
-        (i) =>
-          i.name.toLowerCase().includes("restaurang") ||
-          i.name.toLowerCase().includes("dining") ||
-          i.entry_mode === "multi_entry"
-      ),
-    };
-  }
-
-  const elecKeywords = [
-    "vattenfall",
-    "ellevio",
-    "e.on",
-    "eon",
-    "tibber",
-    "fortum",
-    "greenely",
-    "skånska energi",
-  ];
-  if (elecKeywords.some((k) => lower.includes(k))) {
-    return {
-      item: items.find(
-        (i) =>
-          i.name.toLowerCase().includes("el") ||
-          i.name.toLowerCase().includes("electr")
-      ),
-    };
-  }
-
-  const transitKeywords = [
-    "sl ",
-    "västtrafik",
-    "skånetrafiken",
-    "sj ",
-    "circle k",
-    "okq8",
-    "preem",
-    "st1",
-    "easypark",
-    "aimo",
-  ];
-  if (transitKeywords.some((k) => lower.includes(k))) {
-    return {
-      item: items.find(
-        (i) =>
-          i.name.toLowerCase().includes("kollektiv") ||
-          i.name.toLowerCase().includes("transit") ||
-          i.name.toLowerCase().includes("transport")
+          /mat|dagligvaror|grocer/i.test(i.name)
       ),
     };
   }
@@ -348,7 +508,11 @@ export function BankImportModal({
   const [amountColIdx, setAmountColIdx] = useState<number>(2);
   const [showColumnMapper, setShowColumnMapper] = useState<boolean>(false);
 
-  const [candidates, setCandidates] = useState<ParsedCandidate[]>([]);
+  const [merchantGroups, setMerchantGroups] = useState<
+    MerchantGroupCandidate[]
+  >([]);
+  const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
+  const [monthScope, setMonthScope] = useState<"all" | string>("all");
   const [fileName, setFileName] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -358,13 +522,22 @@ export function BankImportModal({
   const [newRulePattern, setNewRulePattern] = useState("");
   const [newRuleItemId, setNewRuleItemId] = useState(items[0]?.id || "");
 
+  // Distinct YYYY-MM months present across all parsed transactions
+  const availableMonths = useMemo(() => {
+    const set = new Set<string>();
+    for (const mg of merchantGroups) {
+      for (const tx of mg.transactions) {
+        set.add(tx.yearMonth);
+      }
+    }
+    return Array.from(set).sort().reverse();
+  }, [merchantGroups]);
+
   if (!open) return null;
 
-  const defaultExpenseGroup =
-    groups.find((g) => g.kind === "expense")?.id || groups[0]?.id || "";
   const defaultItemId = items[0]?.id || "";
 
-  const buildCandidatesFromColumns = (
+  const buildGroupedCandidatesFromColumns = (
     rows: unknown[][],
     startRow: number,
     dCol: number,
@@ -372,7 +545,7 @@ export function BankImportModal({
     tCol2: number,
     aCol: number
   ) => {
-    const parsed: ParsedCandidate[] = [];
+    const rawTxs: RawTransactionRow[] = [];
 
     for (let i = startRow; i < rows.length; i++) {
       const r = rows[i];
@@ -382,32 +555,15 @@ export function BankImportModal({
       const secondaryText =
         tCol2 !== -1 && tCol2 !== tCol ? String(r[tCol2] ?? "").trim() : "";
 
-      let rawDesc = primaryText;
-      if (secondaryText && !primaryText) {
-        rawDesc = secondaryText;
-      } else if (
-        primaryText &&
-        secondaryText &&
-        primaryText.toLowerCase() !== secondaryText.toLowerCase()
-      ) {
-        // E.g. Sparbanken Referens="ICA KVANTUM" + Beskrivning="Kortköp"
-        const genericLabels = ["kortköp", "autogiro", "betalning", "överföring", "swish"];
-        if (genericLabels.includes(primaryText.toLowerCase())) {
-          rawDesc = `${secondaryText} (${primaryText})`;
-        } else if (genericLabels.includes(secondaryText.toLowerCase())) {
-          rawDesc = primaryText;
-        } else {
-          rawDesc = `${primaryText} — ${secondaryText}`;
-        }
-      }
+      const { merchantName, detailNote } = buildCleanMerchantName(
+        primaryText,
+        secondaryText
+      );
 
       const rawAmt = parseNumericAmount(r[aCol]);
-      if (!rawDesc || rawAmt === null || rawAmt === 0) continue;
+      if (!merchantName || rawAmt === null || rawAmt === 0) continue;
 
-      // Skip accidental summary/header rows
-      if (
-        /^(belopp|amount|summa|totalt|saldo)$/i.test(rawDesc)
-      ) {
+      if (/^(belopp|amount|summa|totalt|saldo)$/i.test(merchantName)) {
         continue;
       }
 
@@ -417,47 +573,128 @@ export function BankImportModal({
       const cleanDate = dateMatch
         ? dateMatch[1].replace(/[/.]/g, "-")
         : `${yearMonth}-15`;
+      const txYearMonth = cleanDate.slice(0, 7);
 
-      const { item: matchedItem, matchedRule } = matchItemWithRules(
-        rawDesc,
-        items,
-        merchantRules
-      );
-      const suggestedPattern = extractCleanMerchantKeyword(rawDesc);
-
-      parsed.push({
-        id: `imp-${i}`,
+      rawTxs.push({
+        id: `tx-${i}`,
         date: cleanDate,
-        description: rawDesc,
+        yearMonth: txYearMonth,
+        merchantName,
+        detailNote,
         amount: absAmount,
         rawSignedAmount: rawAmt,
-        actionType: matchedItem ? "existing_item" : "new_once",
-        targetItemId: matchedItem?.id || defaultItemId,
-        targetGroupId: matchedItem?.group_id || defaultExpenseGroup,
-        matchedRulePattern: matchedRule?.pattern,
-        rememberRule: Boolean(matchedItem && !matchedRule),
-        rulePattern: suggestedPattern,
       });
     }
 
-    if (parsed.length === 0) {
+    if (rawTxs.length === 0) {
       setErrorMsg(
         locale === "sv"
           ? "Kunde inte hitta några transaktionsrader med dessa kolumnval. Prova att justera kolumnerna nedan."
           : "Could not find transaction rows with these column selections. Try adjusting the columns below."
       );
       setShowColumnMapper(true);
-    } else {
-      setErrorMsg(null);
+      setMerchantGroups([]);
+      return;
     }
 
-    setCandidates(parsed.slice(0, 250));
+    setErrorMsg(null);
+
+    // Group transactions by normalized (merchantName + isIncome) so recurring bills are categorized ONCE!
+    const groupedMap = new Map<string, RawTransactionRow[]>();
+    for (const tx of rawTxs) {
+      const isInc = tx.rawSignedAmount > 0;
+      const normKey = `${isInc ? "INC" : "EXP"}::${tx.merchantName
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim()}`;
+      const list = groupedMap.get(normKey) || [];
+      list.push(tx);
+      groupedMap.set(normKey, list);
+    }
+
+    const groupedCandidates: MerchantGroupCandidate[] = [];
+
+    for (const [normKey, txList] of groupedMap.entries()) {
+      const first = txList[0];
+      const isIncome = first.rawSignedAmount > 0;
+      const distinctMonths = Array.from(
+        new Set(txList.map((t) => t.yearMonth))
+      ).sort();
+      const totalAmount = txList.reduce((s, t) => s + t.amount, 0);
+      const avgAmount = Math.round(totalAmount / distinctMonths.length);
+      const latestAmount = txList[0].amount;
+
+      const { item: matchedItem, matchedRule } = matchItemWithRules(
+        first.merchantName,
+        items,
+        merchantRules
+      );
+
+      const { groupId, categoryHint, isInternalTransfer } =
+        suggestGroupAndCategory(first.merchantName, isIncome, groups, locale);
+
+      // Determine smart default action:
+      // 1. If internal transfer ("Överföring via internet", "Överföring", "Insättning") -> default to "skip"
+      // 2. If matched to an existing item -> "existing_item"
+      // 3. If appears across >= 2 months OR is a known monthly bill -> "new_monthly"
+      // 4. Otherwise -> "new_once"
+      const knownRecurringPattern =
+        /lf |försäk|csn|santander|telia|telenor|e\.on|vattenfall|verisure|kävlinge kommun|nordicwell|union|sv ingenj|rädda barnen|avanza|månadsspar|barnbidrag|lön|hsb|tre kronor/i.test(
+          first.merchantName
+        );
+      const isRecurring =
+        distinctMonths.length >= 2 ||
+        txList.length >= 2 ||
+        knownRecurringPattern;
+
+      let defaultAction: MerchantGroupCandidate["actionType"] = "new_once";
+      if (isInternalTransfer) {
+        defaultAction = "skip";
+      } else if (matchedItem) {
+        defaultAction = "existing_item";
+      } else if (isRecurring) {
+        defaultAction = "new_monthly";
+      }
+
+      groupedCandidates.push({
+        merchantKey: normKey,
+        displayName: first.merchantName,
+        transactions: txList,
+        distinctMonths,
+        isIncome,
+        avgAmount,
+        latestAmount,
+        totalAmount,
+        actionType: defaultAction,
+        targetItemId: matchedItem?.id || defaultItemId,
+        targetGroupId: matchedItem?.group_id || groupId,
+        suggestedCategoryLabel: categoryHint,
+        matchedRulePattern: matchedRule?.pattern,
+        rememberRule: Boolean(matchedItem && !matchedRule),
+        rulePattern: extractCleanMerchantKeyword(first.merchantName),
+      });
+    }
+
+    // Sort: recurring & multi-row merchants first, skipped internal transfers at the bottom
+    groupedCandidates.sort((a, b) => {
+      if (a.actionType === "skip" && b.actionType !== "skip") return 1;
+      if (a.actionType !== "skip" && b.actionType === "skip") return -1;
+      if (b.distinctMonths.length !== a.distinctMonths.length) {
+        return b.distinctMonths.length - a.distinctMonths.length;
+      }
+      return b.transactions.length - a.transactions.length;
+    });
+
+    setMerchantGroups(groupedCandidates);
+    setMonthScope("all");
   };
 
   const processRawRows = (rows: unknown[][]) => {
     setErrorMsg(null);
     const nonEmptyRows = (rows || []).filter(
-      (r) => Array.isArray(r) && r.some((cell) => String(cell ?? "").trim() !== "")
+      (r) =>
+        Array.isArray(r) &&
+        r.some((cell) => String(cell ?? "").trim() !== "")
     );
 
     if (nonEmptyRows.length === 0) {
@@ -471,8 +708,6 @@ export function BankImportModal({
 
     setRawGrid(nonEmptyRows);
 
-    // Scan up to the first 30 rows to find the table header row
-    // (Swedbank / Sparbanken often has metadata rows at the top before the header)
     let detectedHeaderRow = -1;
     let dCol = 0;
     let tCol = 1;
@@ -486,15 +721,18 @@ export function BankImportModal({
           .trim()
       );
 
-      // Date column: match transaktionsdag / bokföringsdag / valutadag / datum / date
-      const dIdx = row.findIndex((h) =>
-        /^(transaktionsdag|bokföringsdag|bokf\.?dag|valutadag|datum|date|köpdag)$/.test(
-          h
-        ) || /bokföringsdag|transaktionsdag|datum|date/.test(h)
-      );
+      // Prefer Transaktionsdag over Bokföringsdag so end-of-month bills stay in their transaction month
+      const txDayIdx = row.findIndex((h) => /^transaktionsdag$/.test(h));
+      const dIdx =
+        txDayIdx !== -1
+          ? txDayIdx
+          : row.findIndex(
+              (h) =>
+                /^(bokföringsdag|bokf\.?dag|valutadag|datum|date|köpdag)$/.test(
+                  h
+                ) || /bokföringsdag|transaktionsdag|datum|date/.test(h)
+            );
 
-      // Primary merchant/reference column: in Sparbanken "Referens" holds the merchant name
-      // while "Beskrivning" holds "Kortköp" / "Swish" / etc.
       const refIdx = row.findIndex((h) =>
         /^(referens|mottagare|specifikation|text|merchant|butik|inköpsställe)$/.test(
           h
@@ -509,7 +747,6 @@ export function BankImportModal({
           )
       );
 
-      // Amount column: match "belopp" (NOT "bokfört saldo" or "saldo")
       const aIdx = row.findIndex(
         (h) =>
           !/saldo|balance/.test(h) &&
@@ -522,8 +759,7 @@ export function BankImportModal({
           ? aIdx
           : row.findIndex(
               (h) =>
-                !/saldo|balance/.test(h) &&
-                /belopp|amount|summa/.test(h)
+                !/saldo|balance/.test(h) && /belopp|amount|summa/.test(h)
             );
 
       const primaryTextIdx = refIdx !== -1 ? refIdx : descIdx;
@@ -540,8 +776,6 @@ export function BankImportModal({
       }
     }
 
-    // Fallback heuristic if no named header row matched:
-    // Inspect data rows directly to find a date column, a text column, and a numeric amount column
     if (detectedHeaderRow === -1) {
       for (let r = 0; r < Math.min(15, nonEmptyRows.length); r++) {
         const row = nonEmptyRows[r].map((c) => String(c ?? "").trim());
@@ -549,7 +783,6 @@ export function BankImportModal({
         const foundDateCol = row.findIndex((val) =>
           /^\d{4}[-/.]\d{2}[-/.]\d{2}/.test(val)
         );
-        // Find numeric columns (excluding date & account number columns)
         const numCols: number[] = [];
         row.forEach((val, idx) => {
           if (idx === foundDateCol) return;
@@ -566,13 +799,10 @@ export function BankImportModal({
         if (foundDateCol !== -1 && numCols.length > 0) {
           detectedHeaderRow = Math.max(0, r - 1);
           dCol = foundDateCol;
-          // In Sparbanken, if there are 2 numeric columns at the end (Belopp, Bokfört saldo),
-          // Belopp is the second-to-last or the one before Saldo
           aCol =
             numCols.length >= 2
               ? numCols[numCols.length - 2]
               : numCols[0];
-          // Pick text columns between dateCol and amountCol
           const candidateTextCols = row
             .map((val, idx) => ({ val, idx }))
             .filter(
@@ -600,7 +830,7 @@ export function BankImportModal({
     setSecondaryDescColIdx(tCol2);
     setAmountColIdx(aCol);
 
-    buildCandidatesFromColumns(
+    buildGroupedCandidatesFromColumns(
       nonEmptyRows,
       startRow,
       dCol,
@@ -620,11 +850,9 @@ export function BankImportModal({
       const buffer = await file.arrayBuffer();
       const lowerName = file.name.toLowerCase();
 
-      // If CSV or TXT: decode with UTF-8 (fallback to ISO-8859-1 / Windows-1252 used by Swedbank/Sparbanken!)
       if (lowerName.endsWith(".csv") || lowerName.endsWith(".txt")) {
         let text = new TextDecoder("utf-8").decode(buffer);
         if (text.includes("\uFFFD")) {
-          // Contains replacement character -> file is ISO-8859-1 / Windows-1252 encoded!
           text = new TextDecoder("iso-8859-1").decode(buffer);
         }
         const csvRows = parseCsvTextToRows(text);
@@ -632,12 +860,9 @@ export function BankImportModal({
         return;
       }
 
-      // Excel (.xlsx / .xls)
       const workbook = XLSX.read(buffer, { type: "array", raw: false });
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
-
-      // Critical fix for Sparbanken / Swedbank .xlsx files whose '!ref' is truncated to row 1-2
       ensureFullWorksheetRange(worksheet);
 
       const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
@@ -656,15 +881,11 @@ export function BankImportModal({
   };
 
   const handleLoadSample = () => {
-    setFileName("sparbanken_transaktioner.csv (Exempel)");
+    setFileName("Transaktioner_Hushallskonto_Sparbanken.csv");
     processRawRows([
-      ["* Transaktioner Period 2026-10-01 - 2026-10-31"],
+      ["Transaktioner Hushållskonto", "", "", "", "", "", "", ""],
       [
         "Radnummer",
-        "Clearingnummer",
-        "Kontonummer",
-        "Produkt",
-        "Valuta",
         "Bokföringsdag",
         "Transaktionsdag",
         "Valutadag",
@@ -673,82 +894,37 @@ export function BankImportModal({
         "Belopp",
         "Bokfört saldo",
       ],
-      [
-        "1",
-        "81234",
-        "123456789",
-        "Privatkonto",
-        "SEK",
-        `${yearMonth}-18`,
-        `${yearMonth}-18`,
-        `${yearMonth}-18`,
-        "WILLYS HEMMA",
-        "Kortköp",
-        "−680,00",
-        "24 120,00",
-      ],
-      [
-        "2",
-        "81234",
-        "123456789",
-        "Privatkonto",
-        "SEK",
-        `${yearMonth}-14`,
-        `${yearMonth}-14`,
-        `${yearMonth}-14`,
-        "FOLKTANDVÅRDEN",
-        "Kortköp",
-        "−1 450,00",
-        "24 800,00",
-      ],
-      [
-        "3",
-        "81234",
-        "123456789",
-        "Privatkonto",
-        "SEK",
-        `${yearMonth}-09`,
-        `${yearMonth}-09`,
-        `${yearMonth}-09`,
-        "VATTENFALL AB",
-        "Autogiro",
-        "−1 920,00",
-        "26 250,00",
-      ],
-      [
-        "4",
-        "81234",
-        "123456789",
-        "Privatkonto",
-        "SEK",
-        `${yearMonth}-08`,
-        `${yearMonth}-08`,
-        `${yearMonth}-08`,
-        "COOP KONSUM",
-        "Kortköp",
-        "−540,00",
-        "28 170,00",
-      ],
-      [
-        "5",
-        "81234",
-        "123456789",
-        "Privatkonto",
-        "SEK",
-        `${yearMonth}-04`,
-        `${yearMonth}-04`,
-        `${yearMonth}-04`,
-        "ICA KVANTUM",
-        "Kortköp",
-        "−1 245,00",
-        "28 710,00",
-      ],
+      ["2", "2026-10-16", "2026-10-20", "2026-10-21", "1988123040311281", "Barnbidrag", "625", "48723.47"],
+      ["3", "2026-10-16", "2026-10-20", "2026-10-21", "1994072020281281", "Barnbidrag", "625", "48098.47"],
+      ["9", "2026-10-01", "2026-10-01", "2026-10-01", "LF MOTOR", "LF MOTOR", "-751", "111857.47"],
+      ["10", "2026-10-01", "2026-10-01", "2026-10-01", "LF Skåne", "LF Skåne", "-595", "112608.47"],
+      ["11", "2026-10-01", "2026-10-01", "2026-10-01", "LF Skåne", "LF Skåne", "-307", "113203.47"],
+      ["15", "2026-09-30", "2026-09-30", "2026-09-30", "CSN", "CSN", "-1541", "113737.47"],
+      ["17", "2026-09-30", "2026-09-30", "2026-09-30", "831398258548919", "Överföring lån", "-4314", "115373.47"],
+      ["18", "2026-09-30", "2026-09-30", "2026-09-30", "831398258548901", "Överföring lån", "-3814", "119687.47"],
+      ["20", "2026-09-30", "2026-09-30", "2026-09-30", "Santander", "Santander", "-3372", "23501.47"],
+      ["22", "2026-09-30", "2026-09-30", "2026-09-30", "Kävlinge kommun", "Kävlinge kommun", "-752", "27263.47"],
+      ["23", "2026-09-30", "2026-09-30", "2026-09-30", "Verisure Sverige", "Verisure Sverige", "-1587", "28015.47"],
+      ["24", "2026-09-30", "2026-09-30", "2026-09-30", "Telia bredband,", "Telia bredband,", "-749", "29602.47"],
+      ["26", "2026-09-28", "2026-09-28", "2026-09-28", "AVANZA BANK", "AVANZA BANK", "-2000", "30621.47"],
+      ["32", "2026-09-28", "2026-09-28", "2026-09-28", "E.ON", "E.ON", "-1983", "89756.82"],
+      ["38", "2026-09-24", "2026-09-25", "2026-09-25", "", "Lön", "22678", "62294.82"],
+      ["39", "2026-09-24", "2026-09-25", "2026-09-25", "", "Lön", "27957.85", "39616.82"],
+      ["43", "2026-09-01", "2026-09-01", "2026-09-01", "LF MOTOR", "LF MOTOR", "-728", "5008.97"],
+      ["49", "2026-08-31", "2026-08-31", "2026-08-30", "CSN", "CSN", "-1541", "6887.97"],
+      ["55", "2026-08-31", "2026-08-31", "2026-08-30", "Telia bredband,", "Telia bredband,", "-749", "39980.99"],
+      ["66", "2026-08-28", "2026-08-28", "2026-08-28", "E.ON", "E.ON", "-1963", "79116.29"],
     ]);
   };
 
-  const updateCandidate = (id: string, patch: Partial<ParsedCandidate>) => {
-    setCandidates((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+  const updateMerchantGroup = (
+    merchantKey: string,
+    patch: Partial<MerchantGroupCandidate>
+  ) => {
+    setMerchantGroups((prev) =>
+      prev.map((mg) =>
+        mg.merchantKey === merchantKey ? { ...mg, ...patch } : mg
+      )
     );
   };
 
@@ -773,20 +949,26 @@ export function BankImportModal({
     await onSaveMerchantRules(nextRules);
   };
 
-  const activeCount = candidates.filter((c) => c.actionType !== "skip").length;
-
-  const groupedItemCounts = candidates.reduce<
-    Record<string, { count: number; sum: number }>
-  >((acc, c) => {
-    if (c.actionType === "existing_item" && c.targetItemId) {
-      const cur = acc[c.targetItemId] || { count: 0, sum: 0 };
-      acc[c.targetItemId] = {
-        count: cur.count + 1,
-        sum: cur.sum + c.amount,
+  // Filter transactions by selected monthScope ("all" or specific "YYYY-MM")
+  const visibleMerchantGroups = merchantGroups
+    .map((mg) => {
+      const filteredTxs =
+        monthScope === "all"
+          ? mg.transactions
+          : mg.transactions.filter((tx) => tx.yearMonth === monthScope);
+      return {
+        ...mg,
+        filteredTxs,
       };
-    }
-    return acc;
-  }, {});
+    })
+    .filter((mg) => mg.filteredTxs.length > 0);
+
+  const activeGroupsCount = visibleMerchantGroups.filter(
+    (mg) => mg.actionType !== "skip"
+  ).length;
+  const activeTransactionsCount = visibleMerchantGroups
+    .filter((mg) => mg.actionType !== "skip")
+    .reduce((sum, mg) => sum + mg.filteredTxs.length, 0);
 
   const headerLabels: string[] =
     rawGrid.length > headerRowIdx
@@ -797,28 +979,29 @@ export function BankImportModal({
       : [];
 
   const handleConfirmImport = async () => {
-    if (activeCount === 0) return;
+    if (activeTransactionsCount === 0) return;
     setImporting(true);
     try {
+      // 1. Save any new Smart Merchant Rules for existing_item mappings
       const updatedRules = [...merchantRules];
       let rulesChanged = false;
 
-      for (const c of candidates) {
+      for (const mg of visibleMerchantGroups) {
         if (
-          c.actionType === "existing_item" &&
-          c.rememberRule &&
-          c.rulePattern.trim() &&
-          c.targetItemId
+          mg.actionType === "existing_item" &&
+          mg.rememberRule &&
+          mg.rulePattern.trim() &&
+          mg.targetItemId
         ) {
-          const cleanPat = c.rulePattern.trim().toLowerCase();
+          const cleanPat = mg.rulePattern.trim().toLowerCase();
           const existingIdx = updatedRules.findIndex(
             (r) => r.pattern.toLowerCase() === cleanPat
           );
           if (existingIdx !== -1) {
-            if (updatedRules[existingIdx].targetItemId !== c.targetItemId) {
+            if (updatedRules[existingIdx].targetItemId !== mg.targetItemId) {
               updatedRules[existingIdx] = {
                 ...updatedRules[existingIdx],
-                targetItemId: c.targetItemId,
+                targetItemId: mg.targetItemId,
               };
               rulesChanged = true;
             }
@@ -826,7 +1009,7 @@ export function BankImportModal({
             updatedRules.push({
               id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               pattern: cleanPat,
-              targetItemId: c.targetItemId,
+              targetItemId: mg.targetItemId,
             });
             rulesChanged = true;
           }
@@ -837,19 +1020,29 @@ export function BankImportModal({
         await onSaveMerchantRules(updatedRules);
       }
 
-      await onImportRows(
-        candidates.map((c) => ({
-          date: c.date,
-          description: c.description,
-          amount: c.amount,
-          actionType: c.actionType,
-          targetItemId: c.targetItemId,
-          targetGroupId: c.targetGroupId,
-          rememberRule: c.rememberRule,
-          rulePattern: c.rulePattern,
-        }))
-      );
-      setCandidates([]);
+      // 2. Flatten grouped merchant decisions into ImportedRowAction[]
+      const actions: ImportedRowAction[] = [];
+      for (const mg of visibleMerchantGroups) {
+        if (mg.actionType === "skip") continue;
+        for (const tx of mg.filteredTxs) {
+          actions.push({
+            date: tx.date,
+            yearMonth: tx.yearMonth,
+            description: mg.displayName,
+            merchantKey: mg.merchantKey,
+            amount: tx.amount,
+            isIncome: mg.isIncome,
+            actionType: mg.actionType,
+            targetItemId: mg.targetItemId,
+            targetGroupId: mg.targetGroupId,
+            rememberRule: mg.rememberRule,
+            rulePattern: mg.rulePattern,
+          });
+        }
+      }
+
+      await onImportRows(actions);
+      setMerchantGroups([]);
       setRawGrid([]);
       setFileName(null);
       onClose();
@@ -873,13 +1066,13 @@ export function BankImportModal({
           <div>
             <h3 className="font-serif text-2xl text-[#282825]">
               {locale === "sv"
-                ? "Bankimport & Smarta Regler"
-                : "Bank Import & Smart Rules"}
+                ? "Bankimport & Auto-Gruppering"
+                : "Bank Import & Auto-Grouping"}
             </h3>
             <p className="text-xs text-[#64645e]">
               {locale === "sv"
-                ? "Stöd för Sparbanken, Swedbank, SEB, Nordea, SHB, ICA m.fl. (.csv & .xlsx)"
-                : "Supports Sparbanken, Swedbank, SEB, Nordea, Amex, Revolut (.csv & .xlsx)"}
+                ? "Samma betalningsmottagare grupperas automatiskt så du bara kategoriserar dem en gång."
+                : "Recurring merchants are grouped automatically so you only categorize them once."}
             </p>
           </div>
           <button
@@ -915,12 +1108,6 @@ export function BankImportModal({
 
           {showRulesDrawer && (
             <div className="border-t border-[#ecece9] p-3 space-y-2.5 bg-[#f8f8f7]">
-              <p className="text-[11px] text-[#64645e]">
-                {locale === "sv"
-                  ? "Transaktioner vars text/referens innehåller sökordet kopplas automatiskt till rätt budgetpost."
-                  : "Transactions containing the keyword automatically map to the target budget item."}
-              </p>
-
               <form onSubmit={handleAddManualRule} className="flex gap-1.5">
                 <input
                   type="text"
@@ -1020,7 +1207,7 @@ export function BankImportModal({
           </div>
         </div>
 
-        {/* Manual Column Mapping Adjuster (when file is loaded) */}
+        {/* Manual Column Mapping Adjuster */}
         {rawGrid.length > 0 && headerLabels.length > 1 && (
           <div className="mt-3 rounded-2xl border border-[#c5c5ba] bg-white p-3">
             <div className="flex items-center justify-between">
@@ -1056,7 +1243,7 @@ export function BankImportModal({
                     onChange={(e) => {
                       const nextD = Number(e.target.value);
                       setDateColIdx(nextD);
-                      buildCandidatesFromColumns(
+                      buildGroupedCandidatesFromColumns(
                         rawGrid,
                         headerRowIdx + 1,
                         nextD,
@@ -1084,7 +1271,7 @@ export function BankImportModal({
                     onChange={(e) => {
                       const nextT = Number(e.target.value);
                       setDescColIdx(nextT);
-                      buildCandidatesFromColumns(
+                      buildGroupedCandidatesFromColumns(
                         rawGrid,
                         headerRowIdx + 1,
                         dateColIdx,
@@ -1112,7 +1299,7 @@ export function BankImportModal({
                     onChange={(e) => {
                       const nextA = Number(e.target.value);
                       setAmountColIdx(nextA);
-                      buildCandidatesFromColumns(
+                      buildGroupedCandidatesFromColumns(
                         rawGrid,
                         headerRowIdx + 1,
                         dateColIdx,
@@ -1142,202 +1329,278 @@ export function BankImportModal({
           </div>
         )}
 
-        {/* Parsed Rows Mapping List */}
-        {candidates.length > 0 && (
-          <div className="mt-4 space-y-2.5">
-            <div className="flex items-center justify-between text-xs font-semibold text-[#64645e]">
-              <span>
-                {locale === "sv"
-                  ? `Hittade ${candidates.length} transaktioner`
-                  : `Found ${candidates.length} transactions`}
-              </span>
-              <span>
-                {activeCount}{" "}
-                {locale === "sv" ? "valda att importera" : "selected"}
-              </span>
-            </div>
-
-            {/* Auto-grouped preview pills when multiple rows target the same item */}
-            {Object.entries(groupedItemCounts).some(([, v]) => v.count > 1) && (
-              <div className="rounded-2xl border border-[#b5e3c4] bg-[#e7f4eb] p-2.5 text-[11px]">
-                <div className="font-bold text-[#057b40] mb-1">
-                  {locale === "sv"
-                    ? "Auto-gruppering till delkvitton:"
-                    : "Auto-grouping into sub-receipts:"}
+        {/* Grouped Merchants List */}
+        {merchantGroups.length > 0 && (
+          <div className="mt-4 space-y-3">
+            {/* Multi-month Filter Pills when statement spans multiple months */}
+            {availableMonths.length > 1 && (
+              <div className="rounded-2xl border border-[#c5c5ba] bg-white p-2.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#64645e] mb-1.5">
+                  <Calendar className="h-3.5 w-3.5 text-[#057b40]" />
+                  <span>
+                    {locale === "sv"
+                      ? `Filen innehåller ${availableMonths.length} månader — välj vad som ska importeras:`
+                      : `Statement spans ${availableMonths.length} months — choose scope:`}
+                  </span>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {Object.entries(groupedItemCounts)
-                    .filter(([, v]) => v.count > 1)
-                    .map(([itemId, info]) => {
-                      const it = items.find((i) => i.id === itemId);
-                      return (
-                        <span
-                          key={itemId}
-                          className="rounded-full bg-white px-2.5 py-0.5 font-mono text-[11px] font-semibold text-[#282825] border border-[#b5e3c4]"
-                        >
-                          {it?.name}: {info.count}{" "}
-                          {locale === "sv" ? "köp" : "txs"} (
-                          {formatCurrency(info.sum, currency, locale)})
-                        </span>
-                      );
-                    })}
+                  <button
+                    type="button"
+                    onClick={() => setMonthScope("all")}
+                    className={`rounded-full px-3 py-1 text-[11px] font-semibold border transition ${
+                      monthScope === "all"
+                        ? "border-[#282825] bg-[#0c0d0d] text-white"
+                        : "border-[#c5c5ba] bg-[#f8f8f7] text-[#282825]"
+                    }`}
+                  >
+                    {locale === "sv"
+                      ? `Alla månader (${availableMonths[availableMonths.length - 1]} – ${availableMonths[0]})`
+                      : `All months (${availableMonths.length})`}
+                  </button>
+                  {availableMonths.map((ym) => (
+                    <button
+                      key={ym}
+                      type="button"
+                      onClick={() => setMonthScope(ym)}
+                      className={`rounded-full px-2.5 py-1 font-mono text-[11px] font-semibold border transition ${
+                        monthScope === ym
+                          ? "border-[#282825] bg-[#0c0d0d] text-white"
+                          : "border-[#c5c5ba] bg-[#f8f8f7] text-[#282825]"
+                      }`}
+                    >
+                      {ym}
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
 
-            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-              {candidates.map((row) => (
-                <div
-                  key={row.id}
-                  className={`rounded-2xl border p-3 text-xs transition ${
-                    row.actionType === "skip"
-                      ? "border-[#c5c5ba] bg-[#ecece9] opacity-55"
-                      : "border-[#282825] bg-white"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="truncate font-bold text-[#282825]">
-                          {row.description}
-                        </span>
-                        {row.matchedRulePattern && (
-                          <span className="inline-flex items-center gap-0.5 rounded-full bg-[#f6e6fc] px-2 py-0.2 text-[10px] font-bold text-[#7a2899] shrink-0">
-                            <Zap className="h-2.5 w-2.5" />
-                            {row.matchedRulePattern}
+            <div className="flex items-center justify-between text-xs font-semibold text-[#64645e]">
+              <span>
+                {locale === "sv"
+                  ? `${visibleMerchantGroups.length} unika mottagare (${activeTransactionsCount} rader)`
+                  : `${visibleMerchantGroups.length} unique merchants (${activeTransactionsCount} rows)`}
+              </span>
+              <span>
+                {activeGroupsCount}{" "}
+                {locale === "sv" ? "aktiva grupper" : "active groups"}
+              </span>
+            </div>
+
+            <div className="max-h-80 space-y-2.5 overflow-y-auto pr-1">
+              {visibleMerchantGroups.map((mg) => {
+                const isExpanded = Boolean(expandedKeys[mg.merchantKey]);
+                const txCount = mg.filteredTxs.length;
+                const filteredSum = mg.filteredTxs.reduce(
+                  (s, t) => s + t.amount,
+                  0
+                );
+                const isRecurringGroup = mg.distinctMonths.length >= 2;
+
+                return (
+                  <div
+                    key={mg.merchantKey}
+                    className={`rounded-2xl border p-3 text-xs transition ${
+                      mg.actionType === "skip"
+                        ? "border-[#c5c5ba] bg-[#ecece9] opacity-60"
+                        : "border-[#282825] bg-white"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-bold text-sm text-[#282825]">
+                            {mg.displayName}
                           </span>
+
+                          {/* Auto-detected category badge */}
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                              mg.isIncome
+                                ? "bg-[#e7f4eb] text-[#057b40]"
+                                : "bg-[#fdeee0] text-[#b85d10]"
+                            }`}
+                          >
+                            {mg.suggestedCategoryLabel}
+                          </span>
+
+                          {/* Recurring multi-month badge */}
+                          {isRecurringGroup && (
+                            <span className="inline-flex items-center gap-0.5 rounded-full bg-[#e1edfe] px-2 py-0.5 text-[10px] font-bold text-[#2173be]">
+                              <Repeat className="h-2.5 w-2.5" />
+                              {locale === "sv"
+                                ? `${mg.distinctMonths.length} mån`
+                                : `${mg.distinctMonths.length} mos`}
+                            </span>
+                          )}
+
+                          {mg.matchedRulePattern && (
+                            <span className="inline-flex items-center gap-0.5 rounded-full bg-[#f6e6fc] px-2 py-0.5 text-[10px] font-bold text-[#7a2899]">
+                              <Zap className="h-2.5 w-2.5" />
+                              {mg.matchedRulePattern}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-[#64645e]">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedKeys((prev) => ({
+                                ...prev,
+                                [mg.merchantKey]: !prev[mg.merchantKey],
+                              }))
+                            }
+                            className="inline-flex items-center gap-0.5 font-sans font-semibold text-[#2173be] hover:underline"
+                          >
+                            {isExpanded ? (
+                              <ChevronDown className="h-3 w-3" />
+                            ) : (
+                              <ChevronRight className="h-3 w-3" />
+                            )}
+                            <span>
+                              {txCount}{" "}
+                              {locale === "sv"
+                                ? txCount === 1
+                                  ? "transaktion"
+                                  : "transaktioner"
+                                : txCount === 1
+                                ? "transaction"
+                                : "transactions"}
+                            </span>
+                          </button>
+                          <span>•</span>
+                          <span>
+                            {locale === "sv" ? "Senaste:" : "Latest:"}{" "}
+                            {formatCurrency(mg.latestAmount, currency, locale)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        <div
+                          className={`font-serif text-lg leading-tight ${
+                            mg.isIncome ? "text-[#057b40]" : "text-[#282825]"
+                          }`}
+                        >
+                          {mg.isIncome ? "+" : ""}
+                          {formatCurrency(filteredSum, currency, locale)}
+                        </div>
+                        {txCount > 1 && (
+                          <div className="font-mono text-[10px] text-[#64645e]">
+                            {locale === "sv" ? "Totalt" : "Total"} ({txCount}x)
+                          </div>
                         )}
                       </div>
-                      <div className="font-mono text-[11px] text-[#64645e]">
-                        {row.date}
+                    </div>
+
+                    {/* Expandable individual transactions list */}
+                    {isExpanded && (
+                      <div className="mt-2 rounded-xl bg-[#f8f8f7] p-2 space-y-1 border border-[#ecece9]">
+                        {mg.filteredTxs.map((tx) => (
+                          <div
+                            key={tx.id}
+                            className="flex items-center justify-between font-mono text-[11px] text-[#64645e]"
+                          >
+                            <span>
+                              {tx.date}
+                              {tx.detailNote ? ` (${tx.detailNote})` : ""}
+                            </span>
+                            <span className="font-bold text-[#282825]">
+                              {formatCurrency(tx.amount, currency, locale)}
+                            </span>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                    <div className="font-serif text-lg text-[#282825] shrink-0">
-                      {formatCurrency(row.amount, currency, locale)}
-                    </div>
-                  </div>
-
-                  {/* Action Selector */}
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <select
-                      value={row.actionType}
-                      onChange={(e) =>
-                        updateCandidate(row.id, {
-                          actionType: e.target
-                            .value as ParsedCandidate["actionType"],
-                        })
-                      }
-                      className="rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-1.5 text-[11px] font-semibold text-[#282825]"
-                    >
-                      <option value="existing_item">
-                        {locale === "sv"
-                          ? "Koppla till befintlig post"
-                          : "Match existing item"}
-                      </option>
-                      <option value="new_once">
-                        {locale === "sv"
-                          ? "Ny engångsutgift (denna mån)"
-                          : "New one-time cost (this month)"}
-                      </option>
-                      <option value="new_monthly">
-                        {locale === "sv"
-                          ? "Ny återkommande månadspost"
-                          : "New recurring monthly item"}
-                      </option>
-                      <option value="skip">
-                        {locale === "sv" ? "Hoppa över" : "Skip row"}
-                      </option>
-                    </select>
-
-                    {row.actionType === "existing_item" && (
-                      <select
-                        value={row.targetItemId}
-                        onChange={(e) =>
-                          updateCandidate(row.id, {
-                            targetItemId: e.target.value,
-                            rememberRule: true,
-                          })
-                        }
-                        className="rounded-full border border-[#c5c5ba] bg-[#e7f4eb] px-3 py-1.5 text-[11px] font-semibold text-[#057b40]"
-                      >
-                        {items.map((it) => (
-                          <option key={it.id} value={it.id}>
-                            {it.name}
-                          </option>
-                        ))}
-                      </select>
                     )}
 
-                    {(row.actionType === "new_once" ||
-                      row.actionType === "new_monthly") && (
+                    {/* Action + Category/Target Item Selector (Categorize ONCE for all rows in this group!) */}
+                    <div className="mt-2.5 grid grid-cols-2 gap-2">
                       <select
-                        value={row.targetGroupId}
+                        value={mg.actionType}
                         onChange={(e) =>
-                          updateCandidate(row.id, {
-                            targetGroupId: e.target.value,
+                          updateMerchantGroup(mg.merchantKey, {
+                            actionType: e.target
+                              .value as MerchantGroupCandidate["actionType"],
                           })
                         }
-                        className="rounded-full border border-[#c5c5ba] bg-[#fdeee0] px-3 py-1.5 text-[11px] font-semibold text-[#b85d10]"
+                        className="rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-1.5 text-[11px] font-semibold text-[#282825]"
                       >
-                        {groups.map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.name}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  {/* Remember Smart Rule Checkbox for existing_item mappings */}
-                  {row.actionType === "existing_item" && (
-                    <div className="mt-2 flex items-center justify-between gap-2 pt-1.5 border-t border-[#ecece9]">
-                      <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#64645e] cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={row.rememberRule}
-                          onChange={(e) =>
-                            updateCandidate(row.id, {
-                              rememberRule: e.target.checked,
-                            })
-                          }
-                          className="rounded border-[#c5c5ba]"
-                        />
-                        <span>
+                        <option value="new_monthly">
                           {locale === "sv"
-                            ? "Spara smart regel för sökord:"
-                            : "Save smart rule for keyword:"}
-                        </span>
-                      </label>
-                      {row.rememberRule && (
-                        <input
-                          type="text"
-                          value={row.rulePattern}
+                            ? "🔄 Ny återkommande månadspost"
+                            : "🔄 New recurring monthly item"}
+                        </option>
+                        <option value="existing_item">
+                          {locale === "sv"
+                            ? "🔗 Koppla till befintlig post"
+                            : "🔗 Match existing item"}
+                        </option>
+                        <option value="new_once">
+                          {locale === "sv"
+                            ? "1️⃣ Ny engångspost"
+                            : "1️⃣ New one-time item"}
+                        </option>
+                        <option value="skip">
+                          {locale === "sv" ? "⏭️ Hoppa över" : "⏭️ Skip"}
+                        </option>
+                      </select>
+
+                      {mg.actionType === "existing_item" && (
+                        <select
+                          value={mg.targetItemId}
                           onChange={(e) =>
-                            updateCandidate(row.id, {
-                              rulePattern: e.target.value,
+                            updateMerchantGroup(mg.merchantKey, {
+                              targetItemId: e.target.value,
+                              rememberRule: true,
                             })
                           }
-                          className="w-32 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-2.5 py-0.5 font-mono text-[11px] text-[#282825]"
-                        />
+                          className="rounded-full border border-[#c5c5ba] bg-[#e7f4eb] px-3 py-1.5 text-[11px] font-semibold text-[#057b40]"
+                        >
+                          {items.map((it) => (
+                            <option key={it.id} value={it.id}>
+                              {it.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+
+                      {(mg.actionType === "new_once" ||
+                        mg.actionType === "new_monthly") && (
+                        <select
+                          value={mg.targetGroupId}
+                          onChange={(e) =>
+                            updateMerchantGroup(mg.merchantKey, {
+                              targetGroupId: e.target.value,
+                            })
+                          }
+                          className="rounded-full border border-[#c5c5ba] bg-[#fdeee0] px-3 py-1.5 text-[11px] font-semibold text-[#b85d10]"
+                        >
+                          {groups.map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.name}
+                            </option>
+                          ))}
+                        </select>
                       )}
                     </div>
-                  )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
 
             <div className="pt-2">
               <button
                 type="button"
-                disabled={importing || activeCount === 0}
+                disabled={importing || activeTransactionsCount === 0}
                 onClick={handleConfirmImport}
                 className="flex w-full items-center justify-center gap-2 rounded-full bg-[#0c0d0d] py-3.5 px-5 text-xs font-bold text-white hover:bg-[#282825] disabled:opacity-50"
               >
                 <Check className="h-4 w-4" />
                 <span>
                   {locale === "sv"
-                    ? `Importera ${activeCount} valda rader`
-                    : `Import ${activeCount} selected rows`}
+                    ? `Importera ${activeGroupsCount} poster (${activeTransactionsCount} transaktioner)`
+                    : `Import ${activeGroupsCount} items (${activeTransactionsCount} transactions)`}
                 </span>
               </button>
             </div>
