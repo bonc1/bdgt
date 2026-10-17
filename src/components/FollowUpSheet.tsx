@@ -12,8 +12,15 @@ import {
   Settings2,
   Receipt,
   Layers,
+  Repeat,
 } from "lucide-react";
-import { ComputedItemMonth, Locale, RecordTransaction } from "@/lib/types";
+import {
+  ComputedItemMonth,
+  FutureUpdateDecision,
+  Locale,
+  RecordTransaction,
+  RecurrenceInterval,
+} from "@/lib/types";
 import { formatCurrency, translations } from "@/lib/i18n";
 
 interface FollowUpSheetProps {
@@ -25,7 +32,8 @@ interface FollowUpSheetProps {
   onConfirmActual: (
     itemId: string,
     actualAmount: number,
-    notes: string
+    notes: string,
+    futureDecision?: FutureUpdateDecision
   ) => Promise<void>;
   onResetPending: (itemId: string) => Promise<void>;
   onAddTransaction: (
@@ -55,6 +63,12 @@ export function FollowUpSheet({
   const [txDesc, setTxDesc] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
+  // Prompt state when actual != expected or when item is one-time
+  const [updateFutureExpected, setUpdateFutureExpected] =
+    useState<boolean>(false);
+  const [oneTimeFutureInterval, setOneTimeFutureInterval] =
+    useState<RecurrenceInterval>(0);
+
   useEffect(() => {
     if (!computed) return;
     const { item, record, displayedActual } = computed;
@@ -68,12 +82,15 @@ export function FollowUpSheet({
     setNotesInput(record?.notes || "");
     setTxAmount("");
     setTxDesc("");
+    setUpdateFutureExpected(false);
+    setOneTimeFutureInterval(0);
   }, [computed]);
 
   if (!computed) return null;
 
   const { item, group, record, isPaymentMonth, coverageLabel } = computed;
   const isConfirmed = record?.status === "confirmed";
+  const isOneTime = item.recurrence_interval_months === 0;
   const transactions: RecordTransaction[] = record?.transactions || [];
   const txSum = transactions.reduce((sum, tx) => sum + Number(tx.amount), 0);
 
@@ -82,6 +99,25 @@ export function FollowUpSheet({
   const diffFromExpected = validActual
     ? parsedActual - item.expected_amount
     : 0;
+  const hasAmountDeviation =
+    validActual && Math.round(diffFromExpected) !== 0;
+
+  const buildFutureDecision = (
+    amountToUse: number
+  ): FutureUpdateDecision | undefined => {
+    if (isOneTime && oneTimeFutureInterval > 0) {
+      return {
+        makeRecurringInterval: oneTimeFutureInterval,
+        updateExpectedAmount: amountToUse,
+      };
+    }
+    if (!isOneTime && updateFutureExpected && hasAmountDeviation) {
+      return {
+        updateExpectedAmount: amountToUse,
+      };
+    }
+    return undefined;
+  };
 
   const handleOneTapConfirm = async () => {
     setSaving(true);
@@ -90,7 +126,12 @@ export function FollowUpSheet({
         item.entry_mode === "multi_entry" && txSum > 0
           ? txSum
           : item.expected_amount;
-      await onConfirmActual(item.id, amountToConfirm, notesInput);
+      await onConfirmActual(
+        item.id,
+        amountToConfirm,
+        notesInput,
+        buildFutureDecision(amountToConfirm)
+      );
       onClose();
     } finally {
       setSaving(false);
@@ -102,7 +143,12 @@ export function FollowUpSheet({
     if (!validActual) return;
     setSaving(true);
     try {
-      await onConfirmActual(item.id, parsedActual, notesInput);
+      await onConfirmActual(
+        item.id,
+        parsedActual,
+        notesInput,
+        buildFutureDecision(parsedActual)
+      );
       onClose();
     } finally {
       setSaving(false);
@@ -380,6 +426,82 @@ export function FollowUpSheet({
               </button>
             </div>
           </div>
+
+          {/* Prompt 1: When Actual differs from Expected on a recurring item */}
+          {!isOneTime && hasAmountDeviation && (
+            <div className="rounded-2xl border border-[#282825] bg-[#fdeee0] p-3.5 space-y-2 animate-in fade-in duration-150">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-[#282825]">
+                <Repeat className="h-3.5 w-3.5 text-[#b85d10]" />
+                <span>{t.followUpPrompt.diffTitle}</span>
+              </div>
+              <p className="text-[11px] text-[#64645e]">
+                {t.followUpPrompt.diffDesc}
+              </p>
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setUpdateFutureExpected(false)}
+                  className={`rounded-full py-2 px-3 text-xs font-semibold border transition ${
+                    !updateFutureExpected
+                      ? "border-[#282825] bg-[#0c0d0d] text-white"
+                      : "border-[#c5c5ba] bg-white text-[#282825]"
+                  }`}
+                >
+                  {t.followUpPrompt.onlyThisMonth}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUpdateFutureExpected(true)}
+                  className={`rounded-full py-2 px-3 text-xs font-semibold border transition ${
+                    updateFutureExpected
+                      ? "border-[#282825] bg-[#0c0d0d] text-white"
+                      : "border-[#c5c5ba] bg-white text-[#282825]"
+                  }`}
+                >
+                  {t.followUpPrompt.updateFutureExpected} (
+                  {formatCurrency(parsedActual, currency, locale)})
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Prompt 2: When confirming or editing a One-Time / Unexpected item */}
+          {isOneTime && (
+            <div className="rounded-2xl border border-[#282825] bg-[#e1edfe] p-3.5 space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-[#282825]">
+                <Repeat className="h-3.5 w-3.5 text-[#2173be]" />
+                <span>{t.followUpPrompt.oneTimeTitle}</span>
+              </div>
+              <div className="grid grid-cols-1 gap-1.5 pt-1">
+                {(
+                  [
+                    { val: 0 as RecurrenceInterval, label: t.followUpPrompt.oneTimeKeep },
+                    {
+                      val: 1 as RecurrenceInterval,
+                      label: t.followUpPrompt.oneTimeMakeMonthly,
+                    },
+                    {
+                      val: 3 as RecurrenceInterval,
+                      label: t.followUpPrompt.oneTimeMakeQuarterly,
+                    },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.val}
+                    type="button"
+                    onClick={() => setOneTimeFutureInterval(opt.val)}
+                    className={`rounded-full py-2 px-3.5 text-left text-xs font-semibold border transition ${
+                      oneTimeFutureInterval === opt.val
+                        ? "border-[#282825] bg-[#0c0d0d] text-white"
+                        : "border-[#c5c5ba] bg-white text-[#282825]"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div>
             <input

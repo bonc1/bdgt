@@ -4,7 +4,8 @@ export type BudgetGroupKind = "income" | "expense" | "savings";
 
 export type EntryMode = "single_bill" | "multi_entry";
 
-export type RecurrenceInterval = 1 | 2 | 3 | 4 | 6 | 12;
+/** 0 = One-time (single month), 1..12 = Recurring every N months */
+export type RecurrenceInterval = 0 | 1 | 2 | 3 | 4 | 6 | 12;
 
 export type RecordStatus = "pending" | "confirmed" | "skipped";
 
@@ -45,6 +46,7 @@ export interface BudgetItem {
   entry_mode: EntryMode;
   expected_amount: number;
   recurrence_interval_months: RecurrenceInterval;
+  one_time_year_month?: string | null; // YYYY-MM when recurrence_interval_months === 0
   anchor_month: number; // 1..12
   coverage_months: number; // 1..12
   is_variable_estimate: boolean;
@@ -88,4 +90,9 @@ export interface ComputedItemMonth {
   effectiveAmount: number; // actual if confirmed/logged, else displayedExpected
   variance: number | null; // actual - expected
   coverageLabel: string;
+}
+
+export interface FutureUpdateDecision {
+  updateExpectedAmount?: number;
+  makeRecurringInterval?: RecurrenceInterval;
 }

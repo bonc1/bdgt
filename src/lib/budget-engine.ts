@@ -9,17 +9,28 @@ import {
   ViewMode,
 } from "./types";
 
-export function isItemDueInMonth(item: BudgetItem, monthNumber: number): boolean {
-  const interval = item.recurrence_interval_months || 1;
+export function isItemDueInMonth(
+  item: BudgetItem,
+  monthNumber: number,
+  yearMonth?: string
+): boolean {
+  const interval = item.recurrence_interval_months;
+  if (interval === 0) {
+    if (!item.one_time_year_month || !yearMonth) return true;
+    return item.one_time_year_month === yearMonth;
+  }
   if (interval === 1) return true;
   const anchor = item.anchor_month || 1;
   const diff = (((monthNumber - anchor) % interval) + interval) % interval;
   return diff === 0;
 }
 
-export function getNextPaymentMonth(item: BudgetItem, currentMonth: number): number {
-  const interval = item.recurrence_interval_months || 1;
-  if (interval === 1) return currentMonth;
+export function getNextPaymentMonth(
+  item: BudgetItem,
+  currentMonth: number
+): number {
+  const interval = item.recurrence_interval_months;
+  if (interval === 0 || interval === 1) return currentMonth;
   for (let offset = 0; offset < 12; offset++) {
     const candidate = ((currentMonth - 1 + offset) % 12) + 1;
     if (isItemDueInMonth(item, candidate)) {
@@ -32,21 +43,32 @@ export function getNextPaymentMonth(item: BudgetItem, currentMonth: number): num
 export function getCoverageLabel(
   item: BudgetItem,
   monthNumber: number,
-  locale: Locale
+  locale: Locale,
+  yearMonth?: string
 ): string {
-  const interval = item.recurrence_interval_months || 1;
+  const interval = item.recurrence_interval_months;
+  if (interval === 0) {
+    return locale === "sv"
+      ? "Engångspost • Endast denna månad"
+      : "One-time • This month only";
+  }
+
   const coverage = item.coverage_months || interval;
-  const due = isItemDueInMonth(item, monthNumber);
+  const due = isItemDueInMonth(item, monthNumber, yearMonth);
   const shortMonths = SHORT_MONTH_NAMES[locale];
 
   if (interval === 1 && coverage === 1) {
     if (item.is_variable_estimate) {
-      return locale === "sv" ? "Månadsvis • Rörlig prognos" : "Monthly • Variable estimate";
+      return locale === "sv"
+        ? "Månadsvis • Rörlig prognos"
+        : "Monthly • Variable estimate";
     }
     return locale === "sv" ? "Varje månad" : "Every month";
   }
 
-  const targetPayMonth = due ? monthNumber : getNextPaymentMonth(item, monthNumber);
+  const targetPayMonth = due
+    ? monthNumber
+    : getNextPaymentMonth(item, monthNumber);
   const startMonth = ((targetPayMonth - 1 - (coverage - 1) + 12) % 12) + 1;
   const startLabel = shortMonths[startMonth - 1];
   const endLabel = shortMonths[targetPayMonth - 1];
@@ -65,8 +87,7 @@ export function getCoverageLabel(
       ? `Var ${interval}:e mån`
       : `Every ${interval} mos`;
 
-  const rangeText =
-    coverage > 1 ? `${startLabel}–${endLabel}` : endLabel;
+  const rangeText = coverage > 1 ? `${startLabel}–${endLabel}` : endLabel;
 
   if (due) {
     return locale === "sv"
@@ -95,7 +116,18 @@ export function computeMonthlyBudget(
   );
 
   return items
-    .filter((item) => item.is_active)
+    .filter((item) => {
+      if (!item.is_active) return false;
+      // One-time items only appear in their designated year_month
+      if (
+        item.recurrence_interval_months === 0 &&
+        item.one_time_year_month &&
+        item.one_time_year_month !== yearMonth
+      ) {
+        return false;
+      }
+      return true;
+    })
     .map((item) => {
       const group = groupMap.get(item.group_id) || {
         id: item.group_id,
@@ -107,32 +139,44 @@ export function computeMonthlyBudget(
         sort_order: 99,
       };
       const record = recordMap.get(item.id) || null;
-      const isPaymentMonth = isItemDueInMonth(item, monthNumber);
+      const isPaymentMonth = isItemDueInMonth(item, monthNumber, yearMonth);
       const baseExpected = record?.expected_snapshot ?? item.expected_amount;
+
+      const intervalDivisor =
+        item.recurrence_interval_months > 0
+          ? item.recurrence_interval_months
+          : 1;
 
       const cashflowExpected = isPaymentMonth ? baseExpected : 0;
       const accrualExpected =
-        baseExpected / (item.recurrence_interval_months || 1);
+        item.recurrence_interval_months === 0
+          ? cashflowExpected
+          : baseExpected / intervalDivisor;
 
       const displayedExpected =
         viewMode === "cashflow" ? cashflowExpected : accrualExpected;
 
-      // Determine actual amount if confirmed or if multi_entry has transactions
       let displayedActual: number | null = null;
       if (record) {
         if (record.status === "confirmed" && record.actual_amount !== null) {
           displayedActual =
             viewMode === "accrual" && item.recurrence_interval_months > 1
-              ? record.actual_amount / item.recurrence_interval_months
+              ? record.actual_amount / intervalDivisor
               : record.actual_amount;
         } else if (
           item.entry_mode === "multi_entry" &&
           record.transactions &&
           record.transactions.length > 0
         ) {
-          const sum = record.transactions.reduce((acc, t) => acc + Number(t.amount), 0);
+          const sum = record.transactions.reduce(
+            (acc, t) => acc + Number(t.amount),
+            0
+          );
           displayedActual = sum;
-        } else if (record.actual_amount !== null && record.status === "confirmed") {
+        } else if (
+          record.actual_amount !== null &&
+          record.status === "confirmed"
+        ) {
           displayedActual = record.actual_amount;
         }
       }
@@ -154,7 +198,7 @@ export function computeMonthlyBudget(
         displayedActual,
         effectiveAmount,
         variance,
-        coverageLabel: getCoverageLabel(item, monthNumber, locale),
+        coverageLabel: getCoverageLabel(item, monthNumber, locale, yearMonth),
       };
     });
 }
@@ -174,7 +218,10 @@ export function shiftYearMonth(yearMonth: string, deltaMonths: number): string {
   return `${ny}-${nm}`;
 }
 
-export function createStarterDataset(householdId: string, locale: Locale): {
+export function createStarterDataset(
+  householdId: string,
+  locale: Locale
+): {
   household: Household;
   groups: BudgetGroup[];
   items: BudgetItem[];
@@ -222,7 +269,8 @@ export function createStarterDataset(householdId: string, locale: Locale): {
     {
       id: "grp-transport",
       household_id: householdId,
-      name: locale === "sv" ? "Transport & Försäkring" : "Transport & Insurance",
+      name:
+        locale === "sv" ? "Transport & Försäkring" : "Transport & Insurance",
       kind: "expense",
       icon: "Car",
       color: "violet",
@@ -286,11 +334,14 @@ export function createStarterDataset(householdId: string, locale: Locale): {
       id: "itm-water-waste",
       household_id: householdId,
       group_id: "grp-housing",
-      name: locale === "sv" ? "Vatten & Sophämtning (Kvartal)" : "Water & Waste (Quarterly)",
+      name:
+        locale === "sv"
+          ? "Vatten & Sophämtning (Kvartal)"
+          : "Water & Waste (Quarterly)",
       entry_mode: "single_bill",
       expected_amount: 1800,
       recurrence_interval_months: 3,
-      anchor_month: currentM, // Due in the current month so the user immediately sees a quarterly bill in action!
+      anchor_month: currentM,
       coverage_months: 3,
       is_variable_estimate: true,
       is_active: true,
@@ -342,7 +393,10 @@ export function createStarterDataset(householdId: string, locale: Locale): {
       id: "itm-transit",
       household_id: householdId,
       group_id: "grp-transport",
-      name: locale === "sv" ? "Kollektivtrafik / Drivmedel" : "Public Transit / Fuel",
+      name:
+        locale === "sv"
+          ? "Kollektivtrafik / Drivmedel"
+          : "Public Transit / Fuel",
       entry_mode: "single_bill",
       expected_amount: 1200,
       recurrence_interval_months: 1,
@@ -360,7 +414,7 @@ export function createStarterDataset(householdId: string, locale: Locale): {
       entry_mode: "single_bill",
       expected_amount: 2400,
       recurrence_interval_months: 12,
-      anchor_month: ((currentM % 12) + 1), // Next month so user can see an upcoming annual bill too
+      anchor_month: (currentM % 12) + 1,
       coverage_months: 12,
       is_variable_estimate: false,
       is_active: true,
@@ -370,7 +424,10 @@ export function createStarterDataset(householdId: string, locale: Locale): {
       id: "itm-isk",
       household_id: householdId,
       group_id: "grp-savings",
-      name: locale === "sv" ? "Månadssparande (ISK / Buffert)" : "Monthly Investment & Buffer",
+      name:
+        locale === "sv"
+          ? "Månadssparande (ISK / Buffert)"
+          : "Monthly Investment & Buffer",
       entry_mode: "single_bill",
       expected_amount: 4500,
       recurrence_interval_months: 1,

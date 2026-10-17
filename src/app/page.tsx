@@ -16,12 +16,14 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   PiggyBank,
+  Sparkles,
 } from "lucide-react";
 import {
   BudgetGroup,
   BudgetGroupKind,
   BudgetItem,
   ComputedItemMonth,
+  FutureUpdateDecision,
   Household,
   HouseholdMember,
   Locale,
@@ -142,6 +144,7 @@ export default function BudgetAppPage() {
   // Modals / Bottom sheets
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [itemModalOpen, setItemModalOpen] = useState(false);
+  const [unexpectedMode, setUnexpectedMode] = useState(false);
   const [editingItem, setEditingItem] = useState<BudgetItem | null>(null);
   const [defaultGroupIdForNew, setDefaultGroupIdForNew] = useState<
     string | undefined
@@ -436,10 +439,42 @@ export default function BudgetAppPage() {
   const handleConfirmActual = async (
     itemId: string,
     actualAmount: number,
-    notes: string
+    notes: string,
+    futureDecision?: FutureUpdateDecision
   ) => {
     const targetItem = items.find((i) => i.id === itemId);
     if (!targetItem) return;
+
+    // If user chose to update future expected amount or convert one-time to recurring
+    if (futureDecision) {
+      const itemUpdates: Partial<BudgetItem> = {};
+      if (futureDecision.updateExpectedAmount !== undefined) {
+        itemUpdates.expected_amount = futureDecision.updateExpectedAmount;
+      }
+      if (
+        futureDecision.makeRecurringInterval !== undefined &&
+        futureDecision.makeRecurringInterval > 0
+      ) {
+        itemUpdates.recurrence_interval_months =
+          futureDecision.makeRecurringInterval;
+        itemUpdates.one_time_year_month = null;
+        itemUpdates.coverage_months = futureDecision.makeRecurringInterval;
+      }
+
+      if (Object.keys(itemUpdates).length > 0) {
+        if (userId && dbReady) {
+          await supabase
+            .from("budget_items")
+            .update(itemUpdates)
+            .eq("id", itemId);
+        }
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === itemId ? { ...it, ...itemUpdates } : it
+          )
+        );
+      }
+    }
 
     const existingRec = records.find(
       (r) => r.item_id === itemId && r.year_month === yearMonth
@@ -641,7 +676,8 @@ export default function BudgetAppPage() {
 
   const handleSaveItem = async (
     data: Omit<BudgetItem, "id" | "household_id" | "sort_order" | "is_active">,
-    existingId?: string
+    existingId?: string,
+    autoConfirmActual?: number
   ) => {
     if (existingId) {
       if (userId && dbReady) {
@@ -651,6 +687,7 @@ export default function BudgetAppPage() {
         prev.map((it) => (it.id === existingId ? { ...it, ...data } : it))
       );
     } else {
+      let createdItemId = `itm-${Date.now()}`;
       if (userId && dbReady) {
         const { data: inserted } = await supabase
           .from("budget_items")
@@ -663,18 +700,76 @@ export default function BudgetAppPage() {
           .select()
           .single();
         if (inserted) {
+          createdItemId = inserted.id;
           setItems((prev) => [...prev, inserted as BudgetItem]);
-          return;
+        } else {
+          const fallbackItem: BudgetItem = {
+            ...data,
+            id: createdItemId,
+            household_id: household.id,
+            is_active: true,
+            sort_order: items.length + 1,
+          };
+          setItems((prev) => [...prev, fallbackItem]);
         }
+      } else {
+        const newItem: BudgetItem = {
+          ...data,
+          id: createdItemId,
+          household_id: household.id,
+          is_active: true,
+          sort_order: items.length + 1,
+        };
+        setItems((prev) => [...prev, newItem]);
       }
-      const newItem: BudgetItem = {
-        ...data,
-        id: `itm-${Date.now()}`,
-        household_id: household.id,
-        is_active: true,
-        sort_order: items.length + 1,
-      };
-      setItems((prev) => [...prev, newItem]);
+
+      // If created via "Unexpected Cost" flow, auto-confirm the actual amount for the current month!
+      if (autoConfirmActual !== undefined) {
+        if (userId && dbReady) {
+          const { data: recData } = await supabase
+            .from("monthly_records")
+            .upsert(
+              {
+                household_id: household.id,
+                item_id: createdItemId,
+                year_month: yearMonth,
+                expected_snapshot: data.expected_amount,
+                actual_amount: autoConfirmActual,
+                status: "confirmed",
+                confirmed_by: userId,
+                confirmed_at: new Date().toISOString(),
+              },
+              { onConflict: "item_id,year_month" }
+            )
+            .select()
+            .single();
+          if (recData) {
+            setRecords((prev) => [
+              ...prev,
+              {
+                ...(recData as MonthlyRecord),
+                expected_snapshot: Number(recData.expected_snapshot),
+                actual_amount: Number(recData.actual_amount),
+                transactions: [],
+              },
+            ]);
+            return;
+          }
+        }
+
+        const autoRec: MonthlyRecord = {
+          id: `rec-${Date.now()}`,
+          household_id: household.id,
+          item_id: createdItemId,
+          year_month: yearMonth,
+          expected_snapshot: data.expected_amount,
+          actual_amount: autoConfirmActual,
+          status: "confirmed",
+          confirmed_at: new Date().toISOString(),
+          transactions: [],
+        };
+        setRecords((prev) => [...prev, autoRec]);
+      }
     }
   };
 
@@ -787,11 +882,11 @@ export default function BudgetAppPage() {
         </div>
 
         {/* Instant SV / EN Pill + Quick Add */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={() => setLocale((l) => (l === "sv" ? "en" : "sv"))}
-            className="rounded-full border border-[#c5c5ba] bg-white px-3 py-1.5 text-xs font-semibold text-[#282825] hover:border-[#282825] transition"
+            className="rounded-full border border-[#c5c5ba] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#282825] hover:border-[#282825] transition"
           >
             {locale === "sv" ? "SV" : "EN"}
           </button>
@@ -799,10 +894,26 @@ export default function BudgetAppPage() {
             type="button"
             onClick={() => {
               setEditingItem(null);
+              setUnexpectedMode(true);
+              setDefaultGroupIdForNew(
+                groups.find((g) => g.kind === "expense")?.id || groups[0]?.id
+              );
+              setItemModalOpen(true);
+            }}
+            className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#fdeee0] px-3 py-1.5 text-xs font-semibold text-[#282825] hover:bg-[#faca9e] transition"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-[#b85d10]" />
+            <span>{t.actions.addUnexpected}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setEditingItem(null);
+              setUnexpectedMode(false);
               setDefaultGroupIdForNew(groups[0]?.id);
               setItemModalOpen(true);
             }}
-            className="inline-flex items-center gap-1 rounded-full bg-[#0c0d0d] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#282825] transition"
+            className="inline-flex items-center gap-1 rounded-full bg-[#0c0d0d] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#282825] transition"
           >
             <Plus className="h-3.5 w-3.5" />
             <span>{locale === "sv" ? "Post" : "Item"}</span>
@@ -1030,6 +1141,7 @@ export default function BudgetAppPage() {
                         type="button"
                         onClick={() => {
                           setEditingItem(null);
+                          setUnexpectedMode(false);
                           setDefaultGroupIdForNew(group.id);
                           setItemModalOpen(true);
                         }}
@@ -1170,6 +1282,7 @@ export default function BudgetAppPage() {
               type="button"
               onClick={() => {
                 setEditingItem(null);
+                setUnexpectedMode(false);
                 setDefaultGroupIdForNew(groups[0]?.id);
                 setItemModalOpen(true);
               }}
@@ -1232,6 +1345,7 @@ export default function BudgetAppPage() {
         onEditItem={(comp: ComputedItemMonth) => {
           setSelectedItemId(null);
           setEditingItem(comp.item);
+          setUnexpectedMode(false);
           setItemModalOpen(true);
         }}
       />
@@ -1241,12 +1355,15 @@ export default function BudgetAppPage() {
         open={itemModalOpen}
         editingItem={editingItem}
         defaultGroupId={defaultGroupIdForNew}
+        unexpectedMode={unexpectedMode}
+        yearMonth={yearMonth}
         groups={groups}
         currency={household.currency}
         locale={locale}
         onClose={() => {
           setItemModalOpen(false);
           setEditingItem(null);
+          setUnexpectedMode(false);
         }}
         onSaveItem={handleSaveItem}
         onDeleteItem={handleDeleteItem}
