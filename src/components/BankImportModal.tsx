@@ -224,6 +224,18 @@ function parseStatementDate(
   preferMonthFirst: boolean
 ): string | null {
   const clean = rawDate.trim();
+  if (!clean) return null;
+
+  // 0. Excel Serial Date Number (e.g. 46204 -> 2026-07-01 in SEB Kort / SAS EuroBonus Mastercard .xlsx files)
+  const serialMatch = clean.match(/^(\d{5})(?:\.\d+)?$/);
+  if (serialMatch) {
+    const serial = parseInt(serialMatch[1], 10);
+    if (serial >= 35000 && serial <= 60000) {
+      const utcMs = Math.round((serial - 25569) * 86400 * 1000);
+      return new Date(utcMs).toISOString().slice(0, 10);
+    }
+  }
+
   // 1. YYYY-MM-DD or YYYY/MM/DD
   const isoMatch = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
   if (isoMatch) {
@@ -258,19 +270,22 @@ function parseStatementDate(
 }
 
 /**
- * Normalize noisy Amex & bank merchant names so recurring subscriptions,
+ * Normalize noisy Amex, SEB/Mastercard & bank merchant names so recurring subscriptions,
  * restaurants, and stores group cleanly into a single merchant entry!
  */
 function normalizeMerchantDisplay(rawName: string): string {
   const s = rawName.replace(/\s+/g, " ").trim();
   const upper = s.toUpperCase();
 
-  // Amex payment received
-  if (upper.includes("BETALNING MOTTAGEN")) {
+  // Credit card bill payments & card fees
+  if (upper.includes("BETALNING MOTTAGEN") || /^INBETALNING$/i.test(upper)) {
     return "Betalning mottagen (Kortinbetalning)";
   }
   if (upper.includes("PERIODENS DEL AV ÅRSAVGIFT")) {
     return "Amex Årsavgift (Månadsdel)";
+  }
+  if (/AVGIFT ERSÄTTNINGSKORT|^ÅRSAVGIFT/i.test(upper)) {
+    return "Kortavgift";
   }
 
   // Major Subscriptions & Digital Services (strip random invoice/receipt codes)
@@ -280,6 +295,8 @@ function normalizeMerchantDisplay(rawName: string): string {
   if (/^DISNEY PLUS|^DISNEY\+/.test(upper)) return "Disney+";
   if (/^VIAPLAY/.test(upper)) return "Viaplay";
   if (/SKYSHOWTIME/.test(upper)) return "SkyShowtime";
+  if (/^TV4 AKTIEBOLAG|^TV4 PLAY/.test(upper)) return "TV4 Play";
+  if (/^PRIME VIDEO/.test(upper)) return "Amazon Prime Video";
   if (/^PLEXINC|^PLEX\b/.test(upper)) return "Plex";
   if (/^APPLE\.COM\/BILL|^APPLE\.COM/.test(upper)) return "Apple / iCloud";
   if (/GOOGLE\s*\*GOOGLE ONE/.test(upper)) return "Google One";
@@ -287,51 +304,87 @@ function normalizeMerchantDisplay(rawName: string): string {
   if (/GOOGLE\s*\*GOOGLE PHOTOS/.test(upper)) return "Google Photos";
   if (/^WWW\.F1\.COM|^F1\.COM/.test(upper)) return "F1 TV (F1.com)";
   if (/^OMNIPUNKTSE|^OMNI\b/.test(upper)) return "Omni";
+  if (/BONNIER-LOCAL|SYDSVENSKAN|DAGENS NYHETER/.test(upper)) return "Bonnier / Nyhetsprenumeration";
   if (/^DOKLAND/.test(upper)) return "Dokland";
   if (/PATREON/.test(upper)) return "Patreon";
+  if (/SUBSCRIBESTAR/.test(upper)) return "SubscribeStar";
+  if (/CIPSOFT/.test(upper)) return "CipSoft (Spel)";
+  if (/MYTHSOFT/.test(upper)) return "MythSoft Tech";
   if (/COMADSOFT/.test(upper)) return "Comadsoft";
   if (/PLAYSTATION/.test(upper)) return "PlayStation";
   if (/FANTASYPRESIDENTCAREER/.test(upper)) return "Fantasy President Career";
+  if (/MYAUDI/.test(upper)) return "myAudi (Bilprenumeration)";
+  if (/MONTHLY OF SWEDEN/.test(upper)) return "Monthly of Sweden";
 
-  // E-commerce & Retail (strip *ORDERID codes like AMAZONMKTPLC*NK0E34HS4)
+  // E-commerce, Pharmacy, Kids & Retail
   if (/^AMAZON PRIME/.test(upper)) return "Amazon Prime";
   if (/^AMAZONMKTPLC|^AMAZONRETAIL|^AMAZON\.SE|^WWW\.AMAZON/.test(upper)) {
     return "Amazon.se";
   }
   if (/BOOZT/.test(upper)) return "Boozt";
   if (/ZALANDO/.test(upper)) return "Zalando";
+  if (/^VINTED\b/.test(upper)) return "Vinted";
+  if (/^ELLOS\b/.test(upper)) return "Ellos";
+  if (/^ZARAHOME|^ZARA\b/.test(upper)) return "Zara / Zara Home";
   if (/^HM\.COM|^H & M HENNES/.test(upper)) return "H&M";
   if (/^ARKET\.COM|^ARKET\b/.test(upper)) return "Arket";
   if (/^AHLENS|^ÅHLENS/.test(upper)) return "Åhléns";
   if (/^LINDEX/.test(upper)) return "Lindex";
+  if (/^KAPPAHL/.test(upper)) return "KappAhl";
+  if (/^CUBUS\b/.test(upper)) return "Cubus";
+  if (/^POLARNOPYRET|^POLARN O\.? PYRET/.test(upper)) return "Polarn O. Pyret";
+  if (/^BESTSELLER\b/.test(upper)) return "Bestseller";
+  if (/JOLLYROOM/.test(upper)) return "Jollyroom";
+  if (/^BABYSAM/.test(upper)) return "BabySam";
+  if (/^BABYVAB/.test(upper)) return "BabyVAB";
   if (/^LYKO/.test(upper)) return "Lyko";
-  if (/^APOTEK HJARTAT|^APOTEKET/.test(upper)) return "Apotek";
+  if (/^APOTEK HJARTAT|^APOTEKET|^KRONANS APOTEK|^APOHEM|^W\*MEDS\.SE|^MEDS\.SE/.test(upper)) {
+    return "Apotek / Meds / Apohem";
+  }
   if (/^BAUHAUS/.test(upper)) return "Bauhaus";
+  if (/^HORNBACH/.test(upper)) return "Hornbach";
+  if (/^BYGGHEMMA/.test(upper)) return "Bygghemma";
+  if (/^COLORAMA/.test(upper)) return "Colorama";
   if (/^JULA\b/.test(upper)) return "Jula";
+  if (/^BILTEMA/.test(upper)) return "Biltema";
   if (/^CLAS OHLSON/.test(upper)) return "Clas Ohlson";
+  if (/^KJELLCO|^KJELL & CO/.test(upper)) return "Kjell & Company";
   if (/^GOLVPOOLEN/.test(upper)) return "Golvpoolen";
   if (/^NORDICNEST/.test(upper)) return "Nordic Nest";
   if (/^VACKER CENTER/.test(upper)) return "Vacker Center Syd";
 
-  // Groceries & Dining
-  if (/^MAXI ICA|^ICA MAXI|^ICA KVANTUM|^ICA SUPERMARKET|^ICA NÄRA/.test(upper)) {
+  // Groceries, Wholesale & Dining
+  if (/^COSTCO.*FUEL/.test(upper)) return "Costco Bensin";
+  if (/^COSTCO\b/.test(upper)) return "Costco";
+  if (/^MAXI ICA|^ICA MAXI|^ICA KVANTUM|^ICA SUPERMARKET|^ICA NÄRA|^ICA NARA/.test(upper)) {
     return "ICA Maxi / ICA";
   }
   if (/^WILLYS/.test(upper)) return "Willys";
   if (/^COOP\b/.test(upper)) return "Coop";
+  if (/^LIDL/.test(upper)) return "Lidl";
   if (/^SYSTEMBOLAGET|^LÖDDEKÖPINGE 1250/.test(upper)) return "Systembolaget";
-  if (/^MCD\b|^MCDONALD|^MCDMALMO|^MCDLODDE/.test(upper)) return "McDonald's";
+  if (/^MCD\b|^MCDONALD|^MCDMALMO|^MCDLODDE|^MCDLUND|^MCDHASSLE/.test(upper)) return "McDonald's";
   if (/^MAX BURGERS/.test(upper)) return "Max Burgers";
+  if (/^MISTER\s*YORK/.test(upper)) return "Mister York";
+  if (/^SALADS AND SMOOTHIES/.test(upper)) return "Salads and Smoothies";
   if (/^ESPRESSO HOUSE/.test(upper)) return "Espresso House";
   if (/^KORT\.CONVINI|^CONVINI/.test(upper)) return "Convini";
-  if (/^REITAN|^PRESSBYRÅN|\bPRESSBYRÅN/.test(upper)) return "Pressbyrån / 7-Eleven";
+  if (/^REITAN|^PRESSBYRÅN|^PRESSBYRAN|\bPRESSBYRÅN/.test(upper)) return "Pressbyrån / 7-Eleven";
   if (/KATJAS\s*PIZZERIA/.test(upper)) return "Katjas Pizzeria";
+  if (/^ZORO RESTAURANG/.test(upper)) return "Zoro Restaurang";
+  if (/^ANNES KONDITORI/.test(upper)) return "Annes Konditori";
+  if (/^BARSEB.*HAMNKROG/.test(upper)) return "Barsebäcks Hamnkrog";
 
-  // Transit, Bridge, Fuel & Parking
+  // Transit, Bridge, Car, Fuel & Parking
   if (/^ORESUNDSBRON|^ÖRESUNDSBRON/.test(upper)) return "Öresundsbron";
+  if (/^SKANETRAFIKEN|^SKÅNETRAFIKEN/.test(upper)) return "Skånetrafiken";
   if (/^EASYPARK/.test(upper)) return "EasyPark";
   if (/^AIMO/.test(upper)) return "Aimo Park";
   if (/^PARKSTER/.test(upper)) return "Parkster";
+  if (/^WASH WORLD/.test(upper)) return "Wash World (Biltvätt)";
+  if (/^TOVEKS BIL/.test(upper)) return "Toveks Bil";
+  if (/^CIRCLE K/.test(upper)) return "Circle K";
+  if (/^PREEM\b/.test(upper)) return "Preem";
   if (/^ST1\b/.test(upper)) return "St1 Tankning";
   if (/^OKQ8/.test(upper)) return "OKQ8";
   if (/^NYCT PAYGO/.test(upper)) return "NYCT Subway (New York)";
@@ -343,9 +396,12 @@ function normalizeMerchantDisplay(rawName: string): string {
     cleaned = multiSpaceParts[0].trim();
   }
 
-  // Strip payment processor prefixes like "TST* ", "ZETTLE *", "PAYPAL *"
+  // Strip payment processor prefixes like "TST* ", "ZETTLE *", "ZETTLE_*", "PAYPAL *", "W*", "AVARDA*", "SUMUP *", "KLARNA*"
   cleaned = cleaned
-    .replace(/^(TST\*\s*|ZETTLE\s*\*\s*|PAYPAL\s*\*\s*|SP\s+)/i, "")
+    .replace(
+      /^(TST\*\s*|ZETTLE_?\s*\*\s*|PAYPAL\s*\*\s*|SUMUP\s*\*\s*|AVARDA\s*\*\s*|KLARNA\s*\*\s*|MPS\s*\*\s*|MS\s*\*\s*|W\*\s*|SP\s+)/i,
+      ""
+    )
     .replace(/^[,.\s]+|[,.\s]+$/g, "")
     .trim();
 
@@ -422,7 +478,7 @@ function extractCleanMerchantKeyword(desc: string): string {
 }
 
 /**
- * Suggest the best BudgetGroup and human category hint for a Swedish/Nordic/Amex merchant
+ * Suggest the best BudgetGroup and human category hint for a Swedish/Nordic/Amex/Mastercard merchant
  */
 function suggestGroupAndCategory(
   merchantName: string,
@@ -450,9 +506,9 @@ function suggestGroupAndCategory(
     groups.find((g) => g.kind === "expense") ||
     groups[0];
 
-  // 1. Internal transfers & Credit Card bill payments ("Betalning mottagen", "Överföring via internet")
+  // 1. Internal transfers & Credit Card bill payments ("Betalning mottagen", "Inbetalning", "Överföring via internet")
   if (
-    /^(överföring via internet|överföring|insättning|egen överföring|betalning mottagen)/i.test(
+    /^(överföring via internet|överföring|insättning|egen överföring|betalning mottagen|inbetalning)/i.test(
       lower
     )
   ) {
@@ -496,7 +552,7 @@ function suggestGroupAndCategory(
 
   // 4. Streaming, Digital Subscriptions & Media
   if (
-    /spotify|netflix|hbo|disney|viaplay|skyshowtime|plex|apple|google one|google play|google photos|f1 tv|f1\.com|omni|dokland|patreon|comadsoft|playstation|amazon prime|amex årsavgift/.test(
+    /spotify|netflix|hbo|disney|viaplay|skyshowtime|tv4 play|prime video|plex|apple|google one|google play|google photos|f1 tv|f1\.com|omni|bonnier|dokland|patreon|subscribestar|cipsoft|mythsoft|comadsoft|playstation|amazon prime|amex årsavgift|kortavgift/.test(
       lower
     )
   ) {
@@ -512,11 +568,11 @@ function suggestGroupAndCategory(
 
   // 5. Housing, Renovation, Electricity, Broadband, Security
   if (
-    /överföring lån|bolån|sbab|landshypotek|e\.on|eon|vattenfall|ellevio|tibber|fortum|skånska energi|telia|telenor|bahnhof|tele2|verisure|sector alarm|kävlinge kommun|kommun|hsb|riksbyggen|hyra|badrum|bauhaus|golvpoolen|jula|clas ohlson|granngarden|rusta|impecta/.test(
+    /överföring lån|bolån|sbab|landshypotek|e\.on|eon|vattenfall|ellevio|tibber|fortum|skånska energi|telia|telenor|bahnhof|tele2|verisure|sector alarm|kävlinge kommun|kommun|hsb|riksbyggen|hyra|badrum|bauhaus|hornbach|bygghemma|colorama|golvpoolen|jula|biltema|clas ohlson|granngarden|rusta|impecta/.test(
       lower
     )
   ) {
-    const subHint = /bauhaus|golvpoolen|jula|clas ohlson|badrum|rusta|granngarden/.test(
+    const subHint = /bauhaus|hornbach|bygghemma|colorama|golvpoolen|jula|biltema|clas ohlson|badrum|rusta|granngarden/.test(
       lower
     )
       ? locale === "sv"
@@ -541,18 +597,18 @@ function suggestGroupAndCategory(
     };
   }
 
-  // 6. Transport, Bridge, Fuel, Parking, Insurance, CSN
+  // 6. Transport, Bridge, Fuel, Car, Parking, Insurance, CSN
   if (
-    /öresundsbron|oresundsbron|easypark|aimo|parkster|st1|okq8|circle k|preem|sj ab|rejsekort|nyct|uber|lirr|lf motor|lf skåne|länsförsäkringar|swedb försäk|tre kronor|santander|csn|transportstyrels/.test(
+    /öresundsbron|oresundsbron|skånetrafiken|skanetrafiken|easypark|aimo|parkster|wash world|toveks bil|myaudi|costco bensin|st1|okq8|circle k|preem|sj ab|rejsekort|nyct|uber|lirr|lf motor|lf skåne|länsförsäkringar|swedb försäk|tre kronor|santander|csn|transportstyrels/.test(
       lower
     )
   ) {
-    const subHint = /öresundsbron|oresundsbron|st1|okq8|easypark|aimo|parkster|sj |uber|nyct/.test(
+    const subHint = /öresundsbron|oresundsbron|skånetrafiken|costco bensin|st1|okq8|circle k|preem|easypark|aimo|parkster|wash world|toveks bil|myaudi|sj |uber|nyct/.test(
       lower
     )
       ? locale === "sv"
-        ? "Transport, Bro & Bränsle"
-        : "Transit, Bridge & Fuel"
+        ? "Transport, Bil & Bränsle"
+        : "Transit, Car & Fuel"
       : /lf |försäk|tre kronor/.test(lower)
       ? locale === "sv"
         ? "Försäkring"
@@ -569,25 +625,25 @@ function suggestGroupAndCategory(
   }
 
   // 7. Groceries, Restaurants, Shopping, Travel
-  const subHint = /ica |willys|coop|hemköp|lidl|systembolaget|fruktaffär/.test(
+  const subHint = /ica |costco|willys|coop|hemköp|lidl|systembolaget|fruktaffär/.test(
     lower
   )
     ? locale === "sv"
       ? "Mat & Dagligvaror"
       : "Groceries"
-    : /mcdonald|max burgers|espresso house|convini|pressbyrån|pizzeria|laziza|osteria|vapiano|phuun thai|starbucks|diner|taco|burger|red lobster|chao ban/.test(
+    : /mcdonald|max burgers|mister york|salads|espresso house|convini|pressbyrån|pizzeria|zoro|annes konditori|barsebäck|bella napoli|aioli|aiko sushi|laziza|osteria|vapiano|phuun thai|starbucks|diner|taco|burger|red lobster|chao ban/.test(
         lower
       )
     ? locale === "sv"
       ? "Restaurang & Café"
       : "Dining & Café"
-    : /amazon\.se|boozt|zalando|h&m|arket|åhléns|ahlens|lindex|lyko|vacker|uniqlo|macys|nordstrom|aritzia|levi|j crew|sephora|kicks|babysam/.test(
+    : /amazon\.se|boozt|zalando|vinted|ellos|zara|bestseller|h&m|arket|åhléns|ahlens|lindex|kappahl|cubus|polarn|jollyroom|babysam|apotek|lyko|vacker|kjell|uniqlo|macys|nordstrom|aritzia|levi|j crew|sephora|kicks/.test(
         lower
       )
     ? locale === "sv"
-      ? "Shopping & Kläder"
-      : "Shopping & Apparel"
-    : /hotel|moxy|cph\.dk|esta|ticketmaster/.test(lower)
+      ? "Shopping, Barn & Apotek"
+      : "Shopping, Kids & Pharmacy"
+    : /hotel|waxholmshotell|moxy|cph\.dk|esta|ticketmaster|tickster/.test(lower)
     ? locale === "sv"
       ? "Resor & Upplevelser"
       : "Travel & Events"
@@ -759,6 +815,7 @@ export function BankImportModal({
     }
 
     const rawTxs: RawTransactionRow[] = [];
+    let currentCardholder = "";
 
     for (let i = startRow; i < rows.length; i++) {
       const r = rows[i];
@@ -774,14 +831,23 @@ export function BankImportModal({
         break;
       }
 
+      // Detect SEB Kort / SAS Mastercard cardholder section header (e.g. "525412******7076 | Hedestam Maja")
+      if (/^\d{4,6}\*{4,8}\d{3,4}$/.test(firstCellText)) {
+        const holder = String(r[1] ?? "").trim();
+        if (holder) currentCardholder = holder;
+        continue;
+      }
+
       const rawDate = String(r[dCol] ?? "").trim();
       const parsedDate = parseStatementDate(rawDate, preferMonthFirst);
-      // Skip metadata/footer lines that do not have a valid transaction date
+      // Skip metadata/footer/exchange-rate lines that do not have a valid transaction date
       if (!parsedDate) continue;
 
       const primaryText = String(r[tCol] ?? "").trim();
       const secondaryText =
-        tCol2 !== -1 && tCol2 !== tCol ? String(r[tCol2] ?? "").trim() : "";
+        tCol2 !== -1 && tCol2 !== tCol
+          ? String(r[tCol2] ?? "").trim()
+          : currentCardholder;
 
       const { merchantName, detailNote } = buildCleanMerchantName(
         primaryText,
@@ -791,13 +857,17 @@ export function BankImportModal({
       const rawAmt = parseNumericAmount(r[aCol]);
       if (!merchantName || rawAmt === null || rawAmt === 0) continue;
 
-      if (/^(belopp|amount|summa|totalt|saldo)$/i.test(merchantName)) {
+      if (
+        /^(belopp|amount|summa|summa köp\/uttag|totalt|totalt belopp|saldo|specifikation|beskrivning)$/i.test(
+          merchantName
+        )
+      ) {
         continue;
       }
 
       // Sign convention:
       // - In Bank Account mode (Sparbanken): negative (-751) is an Expense, positive (+27957) is Income
-      // - In Credit Card mode (Amex): positive (+89) is an Expense, negative (-1777.5) is a Refund or Card Bill Payment
+      // - In Credit Card mode (Amex / SEB Mastercard): positive (+89) is an Expense, negative (-1777.5) is a Refund or Card Bill Payment
       let isIncome = false;
       let isRefund = false;
       let signedExpenseOrIncomeAmt = Math.abs(rawAmt);
@@ -805,10 +875,10 @@ export function BankImportModal({
       if (creditCardSignMode) {
         isIncome = false;
         if (rawAmt < 0) {
-          if (/betalning mottagen/i.test(merchantName)) {
+          if (/betalning mottagen|inbetalning/i.test(merchantName)) {
             signedExpenseOrIncomeAmt = Math.abs(rawAmt);
           } else {
-            // Credit card refund (e.g. Boozt / Arket return): subtracts from expense total!
+            // Credit card refund (e.g. Boozt / Arket / Monthly of Sweden return): subtracts from expense total!
             isRefund = true;
             signedExpenseOrIncomeAmt = -Math.abs(rawAmt);
           }
@@ -884,7 +954,7 @@ export function BankImportModal({
         suggestGroupAndCategory(first.merchantName, isIncome, groups, locale);
 
       const knownRecurringPattern =
-        /spotify|netflix|hbo|disney|viaplay|skyshowtime|plex|apple|google one|f1 tv|omni|dokland|patreon|comadsoft|amazon prime|amex årsavgift|lf |försäk|csn|santander|telia|telenor|e\.on|vattenfall|verisure|kävlinge kommun|nordicwell|union|sv ingenj|rädda barnen|avanza|månadsspar|barnbidrag|lön|hsb|tre kronor/i.test(
+        /spotify|netflix|hbo|disney|viaplay|skyshowtime|tv4 play|prime video|plex|apple|google one|f1 tv|omni|bonnier|dokland|patreon|subscribestar|cipsoft|comadsoft|myaudi|amazon prime|amex årsavgift|lf |försäk|csn|santander|telia|telenor|e\.on|vattenfall|verisure|kävlinge kommun|nordicwell|union|sv ingenj|rädda barnen|avanza|månadsspar|barnbidrag|lön|hsb|tre kronor/i.test(
           first.merchantName
         );
       const isRecurring =
@@ -957,10 +1027,14 @@ export function BankImportModal({
     let aCol = 2;
     let detectedCreditCard = false;
 
-    // Check top metadata lines for Amex / Credit card indicators
-    for (let r = 0; r < Math.min(10, nonEmptyRows.length); r++) {
+    // Check top metadata lines for Amex / SEB Kort / SAS Mastercard / Credit card indicators
+    for (let r = 0; r < Math.min(25, nonEmptyRows.length); r++) {
       const joined = nonEmptyRows[r].map((c) => String(c ?? "")).join(" ");
-      if (/amex|american express|kortmedlem|kreditkort|mastercard/i.test(joined)) {
+      if (
+        /amex|american express|kortmedlem|kreditkort|mastercard|totalt övriga händelser|köp\/uttag|summa köp\/uttag|utl\.\s*belopp|\d{4,6}\*{4,8}\d{3,4}/i.test(
+          joined
+        )
+      ) {
         detectedCreditCard = true;
       }
     }
@@ -972,7 +1046,11 @@ export function BankImportModal({
           .trim()
       );
 
-      if (row.some((h) => /kortmedlem|visas på ditt kontoutdrag/.test(h))) {
+      if (
+        row.some((h) =>
+          /kortmedlem|visas på ditt kontoutdrag|utl\.\s*belopp/.test(h)
+        )
+      ) {
         detectedCreditCard = true;
       }
 
