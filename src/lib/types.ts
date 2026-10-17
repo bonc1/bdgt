@@ -17,6 +17,12 @@ export type CostSplit = "shared" | "personal_a" | "personal_b";
 
 export type BudgetFilter = "all" | "unconfirmed" | "due_now";
 
+export interface MerchantRule {
+  id: string;
+  pattern: string;
+  targetItemId: string;
+}
+
 export interface Household {
   id: string;
   name: string;
@@ -29,6 +35,7 @@ export interface Household {
   split_mode?: "equal" | "proportional";
   partner_a_income?: number;
   partner_b_income?: number;
+  merchant_rules?: MerchantRule[];
 }
 
 export interface HouseholdMember {

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   CheckCircle2,
   Circle,
   Plus,
@@ -12,6 +13,7 @@ import {
   BarChart3,
   Users,
   CalendarClock,
+  CalendarRange,
   Layers,
   ArrowUpRight,
   ArrowDownRight,
@@ -53,6 +55,7 @@ import { FollowUpSheet } from "@/components/FollowUpSheet";
 import { GroupFormModal, ItemFormModal } from "@/components/ItemFormModal";
 import { InsightsView } from "@/components/InsightsView";
 import { HouseholdView } from "@/components/HouseholdView";
+import { AnnualMatrixView } from "@/components/AnnualMatrixView";
 import {
   BankImportModal,
   ImportedRowAction,
@@ -133,13 +136,16 @@ export default function BudgetAppPage() {
   const [locale, setLocale] = useState<Locale>("sv");
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [activeTab, setActiveTab] = useState<
-    "budget" | "insights" | "household"
+    "budget" | "matrix" | "insights" | "household"
   >("budget");
   const [yearMonth, setYearMonth] = useState<string>(() =>
     getCurrentYearMonth()
   );
   const [viewMode, setViewMode] = useState<ViewMode>("cashflow");
   const [budgetFilter, setBudgetFilter] = useState<BudgetFilter>("all");
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<
+    Record<string, boolean>
+  >({});
 
   // Core state
   const [household, setHousehold] = useState<Household>(() =>
@@ -601,10 +607,7 @@ export default function BudgetAppPage() {
         (s, tx) => s + Number(tx.amount),
         0
       );
-      const amtToConfirm =
-        c.item.entry_mode === "multi_entry" && txSum > 0
-          ? txSum
-          : c.displayedExpected;
+      const amtToConfirm = txSum > 0 ? txSum : c.displayedExpected;
       await handleConfirmActual(c.item.id, amtToConfirm, c.record?.notes || "");
     }
   };
@@ -639,24 +642,15 @@ export default function BudgetAppPage() {
   };
 
   const handleImportRows = async (rows: ImportedRowAction[]) => {
+    // Group existing_item rows by targetItemId so multiple receipts (e.g. ICA + Willys) sum cleanly
+    const byTargetItem = new Map<string, ImportedRowAction[]>();
+
     for (const row of rows) {
       if (row.actionType === "skip") continue;
       if (row.actionType === "existing_item" && row.targetItemId) {
-        const target = items.find((i) => i.id === row.targetItemId);
-        if (!target) continue;
-        if (target.entry_mode === "multi_entry") {
-          await handleAddTransaction(
-            target.id,
-            row.amount,
-            `${row.description} (${row.date})`
-          );
-        } else {
-          await handleConfirmActual(
-            target.id,
-            row.amount,
-            `Import: ${row.description}`
-          );
-        }
+        const list = byTargetItem.get(row.targetItemId) || [];
+        list.push(row);
+        byTargetItem.set(row.targetItemId, list);
       } else if (
         (row.actionType === "new_once" || row.actionType === "new_monthly") &&
         row.targetGroupId
@@ -681,6 +675,37 @@ export default function BudgetAppPage() {
           undefined,
           row.amount
         );
+      }
+    }
+
+    for (const [targetItemId, itemRows] of byTargetItem.entries()) {
+      const target = items.find((i) => i.id === targetItemId);
+      if (!target) continue;
+      const existingRec = records.find(
+        (r) => r.item_id === targetItemId && r.year_month === yearMonth
+      );
+      const hasExistingTxs = (existingRec?.transactions?.length || 0) > 0;
+
+      if (
+        itemRows.length === 1 &&
+        target.entry_mode === "single_bill" &&
+        !hasExistingTxs
+      ) {
+        const only = itemRows[0];
+        await handleConfirmActual(
+          target.id,
+          only.amount,
+          `Import: ${only.description}`
+        );
+      } else {
+        for (const r of itemRows) {
+          await handleAddTransaction(
+            target.id,
+            r.amount,
+            r.description,
+            r.date
+          );
+        }
       }
     }
   };
@@ -710,28 +735,31 @@ export default function BudgetAppPage() {
   const handleAddTransaction = async (
     itemId: string,
     amount: number,
-    description: string
+    description: string,
+    customSpentOn?: string
   ) => {
     const targetItem = items.find((i) => i.id === itemId);
     if (!targetItem) return;
 
-    let existingRec = records.find(
-      (r) => r.item_id === itemId && r.year_month === yearMonth
-    );
-
-    const spentOn = new Date().toISOString().slice(0, 10);
+    const spentOn = customSpentOn || new Date().toISOString().slice(0, 10);
 
     if (userId && dbReady) {
+      let existingRec = records.find(
+        (r) => r.item_id === itemId && r.year_month === yearMonth
+      );
       if (!existingRec) {
         const { data: createdRec } = await supabase
           .from("monthly_records")
-          .insert({
-            household_id: household.id,
-            item_id: itemId,
-            year_month: yearMonth,
-            expected_snapshot: targetItem.expected_amount,
-            status: "pending",
-          })
+          .upsert(
+            {
+              household_id: household.id,
+              item_id: itemId,
+              year_month: yearMonth,
+              expected_snapshot: targetItem.expected_amount,
+              status: "pending",
+            },
+            { onConflict: "item_id,year_month" }
+          )
           .select()
           .single();
         if (createdRec) {
@@ -754,52 +782,65 @@ export default function BudgetAppPage() {
           .single();
 
         if (newTx) {
-          const updatedTxs = [newTx, ...(existingRec.transactions || [])];
-          const updatedRec: MonthlyRecord = {
-            ...existingRec,
-            transactions: updatedTxs,
-          };
-          setRecords((prev) => [
-            ...prev.filter((r) => r.id !== existingRec!.id),
-            updatedRec,
-          ]);
+          setRecords((prev) => {
+            const current = prev.find(
+              (r) => r.item_id === itemId && r.year_month === yearMonth
+            );
+            const prevTxs = current?.transactions || [];
+            const updatedRec: MonthlyRecord = {
+              ...(current || existingRec!),
+              transactions: [newTx, ...prevTxs],
+            };
+            return [
+              ...prev.filter(
+                (r) => !(r.item_id === itemId && r.year_month === yearMonth)
+              ),
+              updatedRec,
+            ];
+          });
           return;
         }
       }
     }
 
-    const recId = existingRec?.id || `rec-${Date.now()}`;
-    const newTx = {
-      id: `tx-${Date.now()}`,
-      household_id: household.id,
-      monthly_record_id: recId,
-      amount,
-      description,
-      spent_on: spentOn,
-    };
-
-    const nextRecord: MonthlyRecord = existingRec
-      ? {
-          ...existingRec,
-          transactions: [newTx, ...(existingRec.transactions || [])],
-        }
-      : {
-          id: recId,
-          household_id: household.id,
-          item_id: itemId,
-          year_month: yearMonth,
-          expected_snapshot: targetItem.expected_amount,
-          actual_amount: null,
-          status: "pending",
-          transactions: [newTx],
-        };
-
-    setRecords((prev) => [
-      ...prev.filter(
-        (r) => !(r.item_id === itemId && r.year_month === yearMonth)
-      ),
-      nextRecord,
-    ]);
+    const newTxId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setRecords((prev) => {
+      const current = prev.find(
+        (r) => r.item_id === itemId && r.year_month === yearMonth
+      );
+      const recId =
+        current?.id ||
+        `rec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const newTx = {
+        id: newTxId,
+        household_id: household.id,
+        monthly_record_id: recId,
+        amount,
+        description,
+        spent_on: spentOn,
+      };
+      const nextRecord: MonthlyRecord = current
+        ? {
+            ...current,
+            transactions: [newTx, ...(current.transactions || [])],
+          }
+        : {
+            id: recId,
+            household_id: household.id,
+            item_id: itemId,
+            year_month: yearMonth,
+            expected_snapshot: targetItem.expected_amount,
+            actual_amount: null,
+            status: "pending",
+            transactions: [newTx],
+          };
+      return [
+        ...prev.filter(
+          (r) => !(r.item_id === itemId && r.year_month === yearMonth)
+        ),
+        nextRecord,
+      ];
+    });
   };
 
   const handleDeleteTransaction = async (itemId: string, txId: string) => {
@@ -1122,7 +1163,7 @@ export default function BudgetAppPage() {
       </header>
 
       {/* Editorial Month Selector Strip */}
-      {activeTab !== "household" && (
+      {(activeTab === "budget" || activeTab === "insights") && (
         <div className="mb-3 flex items-center justify-between rounded-full border border-[#282825] bg-white px-2.5 py-1.5 shadow-editorial">
           <button
             type="button"
@@ -1359,6 +1400,18 @@ export default function BudgetAppPage() {
                 (s, c) => s + c.effectiveAmount,
                 0
               );
+              const groupVariance = groupEffective - groupExpected;
+              const dueInGroup = groupItems.filter((c) => c.isPaymentMonth);
+              const confirmedInGroup = dueInGroup.filter(
+                (c) => c.record?.status === "confirmed"
+              );
+              const groupProgressPct =
+                dueInGroup.length > 0
+                  ? Math.round(
+                      (confirmedInGroup.length / dueInGroup.length) * 100
+                    )
+                  : 0;
+              const isCollapsed = Boolean(collapsedGroupIds[group.id]);
               const hl = getGroupHighlighter(group, idx);
 
               return (
@@ -1366,241 +1419,368 @@ export default function BudgetAppPage() {
                   key={group.id}
                   className="rounded-3xl border border-[#c5c5ba] bg-white overflow-hidden shadow-editorial"
                 >
-                  {/* Group Highlighter Header */}
+                  {/* Collapsible Group Highlighter Header + Progress Bar */}
                   <div
-                    className={`flex items-center justify-between border-b border-[#c5c5ba]/70 ${hl.headerBg} px-4 py-3`}
+                    className={`${hl.headerBg} ${
+                      isCollapsed ? "" : "border-b border-[#c5c5ba]/70"
+                    }`}
                   >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`h-2.5 w-2.5 rounded-full ${hl.dot}`}
-                      />
-                      <h2 className="font-serif text-lg tracking-wide text-[#282825]">
-                        {group.name}
-                      </h2>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingGroup(group);
-                          setGroupModalOpen(true);
-                        }}
-                        className="rounded-full p-1 text-[#64645e] hover:text-[#282825]"
-                        title={
-                          locale === "sv" ? "Redigera grupp" : "Edit group"
-                        }
-                      >
-                        <Settings2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
+                    <div className="flex items-center justify-between px-4 py-3">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedGroupIds((prev) => ({
+                              ...prev,
+                              [group.id]: !prev[group.id],
+                            }))
+                          }
+                          className="flex items-center gap-1.5 text-left hover:opacity-80 transition min-w-0"
+                        >
+                          {isCollapsed ? (
+                            <ChevronRight className="h-4 w-4 shrink-0 text-[#282825]" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4 shrink-0 text-[#282825]" />
+                          )}
+                          <span
+                            className={`h-2.5 w-2.5 shrink-0 rounded-full ${hl.dot}`}
+                          />
+                          <h2 className="truncate font-serif text-lg tracking-wide text-[#282825]">
+                            {group.name}
+                          </h2>
+                        </button>
 
-                    <div className="flex items-center gap-2.5">
-                      <div className="text-right font-mono text-xs">
-                        <span className="font-bold text-[#282825]">
-                          {formatCurrency(
-                            groupEffective,
-                            household.currency,
-                            locale
-                          )}
-                        </span>
-                        <span className="text-[#64645e]">
-                          {" "}
-                          /{" "}
-                          {formatCurrency(
-                            groupExpected,
-                            household.currency,
-                            locale
-                          )}
-                        </span>
+                        {dueInGroup.length > 0 && (
+                          <span className="ml-1 rounded-full bg-white/80 px-2 py-0.5 font-mono text-[10px] font-bold text-[#282825] border border-[#282825]/15 shrink-0">
+                            {confirmedInGroup.length}/{dueInGroup.length} ✓
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingGroup(group);
+                            setGroupModalOpen(true);
+                          }}
+                          className="rounded-full p-1 text-[#64645e] hover:text-[#282825] shrink-0"
+                          title={
+                            locale === "sv" ? "Redigera grupp" : "Edit group"
+                          }
+                        >
+                          <Settings2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingItem(null);
-                          setUnexpectedMode(false);
-                          setDefaultGroupIdForNew(group.id);
-                          setItemModalOpen(true);
-                        }}
-                        className="rounded-full border border-[#282825]/30 bg-white/80 p-1 text-[#282825] hover:bg-white transition"
-                        title={t.actions.addItem}
-                      >
-                        <Plus className="h-3.5 w-3.5" />
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <div className="text-right font-mono text-xs">
+                          <div>
+                            <span className="font-bold text-[#282825]">
+                              {formatCurrency(
+                                groupEffective,
+                                household.currency,
+                                locale
+                              )}
+                            </span>
+                            <span className="text-[#64645e]">
+                              {" "}
+                              /{" "}
+                              {formatCurrency(
+                                groupExpected,
+                                household.currency,
+                                locale
+                              )}
+                            </span>
+                          </div>
+                          {Math.round(groupVariance) !== 0 && (
+                            <div
+                              className={`text-[10px] font-bold ${
+                                group.kind === "income"
+                                  ? groupVariance > 0
+                                    ? "text-[#057b40]"
+                                    : "text-[#b81a14]"
+                                  : groupVariance < 0
+                                  ? "text-[#057b40]"
+                                  : "text-[#b85d10]"
+                              }`}
+                            >
+                              {groupVariance > 0 ? "+" : ""}
+                              {formatCurrency(
+                                groupVariance,
+                                household.currency,
+                                locale
+                              )}{" "}
+                              {locale === "sv" ? "avvikelse" : "var"}
+                            </div>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingItem(null);
+                            setUnexpectedMode(false);
+                            setDefaultGroupIdForNew(group.id);
+                            setItemModalOpen(true);
+                          }}
+                          className="rounded-full border border-[#282825]/30 bg-white/80 p-1 text-[#282825] hover:bg-white transition"
+                          title={t.actions.addItem}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Group Confirmation Progress Bar */}
+                    {dueInGroup.length > 0 && (
+                      <div className="px-4 pb-2">
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/75 border border-[#282825]/10">
+                          <div
+                            className={`h-full rounded-full transition-all ${hl.dot}`}
+                            style={{ width: `${groupProgressPct}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Items inside group */}
-                  <div className="divide-y divide-[#ecece9]">
-                    {groupItems.map((c) => {
-                      const {
-                        item,
-                        record,
-                        isPaymentMonth,
-                        displayedExpected,
-                        displayedActual,
-                        variance,
-                        coverageLabel,
-                      } = c;
-                      const isConfirmed = record?.status === "confirmed";
-                      const hasPartialTx =
-                        item.entry_mode === "multi_entry" &&
-                        (record?.transactions?.length || 0) > 0;
-                      const hasGoal =
-                        item.target_amount && item.target_amount > 0;
-                      const goalPct = hasGoal
-                        ? Math.min(
-                            100,
-                            Math.round(
-                              ((Number(item.current_saved || 0) +
-                                (isConfirmed ? c.effectiveAmount : 0)) /
-                                Number(item.target_amount)) *
-                                100
+                  {/* Items inside group (when not collapsed) */}
+                  {!isCollapsed && (
+                    <div className="divide-y divide-[#ecece9]">
+                      {groupItems.map((c) => {
+                        const {
+                          item,
+                          record,
+                          isPaymentMonth,
+                          displayedExpected,
+                          displayedActual,
+                          variance,
+                          coverageLabel,
+                        } = c;
+                        const isConfirmed = record?.status === "confirmed";
+                        const itemTxs = record?.transactions || [];
+                        const hasPartialTx = itemTxs.length > 0;
+                        const txSum = itemTxs.reduce(
+                          (s, tx) => s + Number(tx.amount),
+                          0
+                        );
+                        const txPct =
+                          displayedExpected > 0
+                            ? Math.min(
+                                100,
+                                Math.round((txSum / displayedExpected) * 100)
+                              )
+                            : 0;
+                        const hasGoal =
+                          item.target_amount && item.target_amount > 0;
+                        const goalPct = hasGoal
+                          ? Math.min(
+                              100,
+                              Math.round(
+                                ((Number(item.current_saved || 0) +
+                                  (isConfirmed ? c.effectiveAmount : 0)) /
+                                  Number(item.target_amount)) *
+                                  100
+                              )
                             )
-                          )
-                        : 0;
+                          : 0;
 
-                      return (
-                        <div
-                          key={item.id}
-                          onClick={() => setSelectedItemId(item.id)}
-                          role="button"
-                          tabIndex={0}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" || e.key === " ") {
-                              setSelectedItemId(item.id);
-                            }
-                          }}
-                          className={`flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-[#f8f8f7] active:bg-[#ecece9] ${
-                            !isPaymentMonth && viewMode === "cashflow"
-                              ? "opacity-55"
-                              : ""
-                          }`}
-                        >
-                          <div className="flex items-start gap-3 min-w-0">
-                            {/* Inline 1-Tap Quick-Confirm Button */}
-                            <button
-                              type="button"
-                              onClick={(e) => handleQuickToggleConfirm(e, c)}
-                              title={
-                                isConfirmed
-                                  ? locale === "sv"
-                                    ? "Ångra bekräftelse"
-                                    : "Undo confirm"
-                                  : locale === "sv"
-                                  ? "Snabb-bekräfta förväntat belopp"
-                                  : "1-tap confirm expected"
+                        return (
+                          <div
+                            key={item.id}
+                            onClick={() => setSelectedItemId(item.id)}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                setSelectedItemId(item.id);
                               }
-                              className="mt-0.5 shrink-0 rounded-full p-0.5 hover:scale-110 transition"
-                            >
-                              {isConfirmed ? (
-                                <CheckCircle2 className="h-5 w-5 text-[#057b40]" />
-                              ) : hasPartialTx ? (
-                                <Layers className="h-5 w-5 text-[#f09236]" />
-                              ) : (
-                                <Circle className="h-5 w-5 text-[#c5c5ba] hover:text-[#057b40]" />
-                              )}
-                            </button>
+                            }}
+                            className={`w-full cursor-pointer px-4 py-3.5 text-left transition hover:bg-[#f8f8f7] active:bg-[#ecece9] ${
+                              !isPaymentMonth && viewMode === "cashflow"
+                                ? "opacity-55"
+                                : ""
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-start gap-3 min-w-0">
+                                {/* Inline 1-Tap Quick-Confirm Button */}
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleQuickToggleConfirm(e, c)}
+                                  title={
+                                    isConfirmed
+                                      ? locale === "sv"
+                                        ? "Ångra bekräftelse"
+                                        : "Undo confirm"
+                                      : locale === "sv"
+                                      ? "Snabb-bekräfta belopp"
+                                      : "1-tap confirm"
+                                  }
+                                  className="mt-0.5 shrink-0 rounded-full p-0.5 hover:scale-110 transition"
+                                >
+                                  {isConfirmed ? (
+                                    <CheckCircle2 className="h-5 w-5 text-[#057b40]" />
+                                  ) : hasPartialTx ? (
+                                    <Layers className="h-5 w-5 text-[#f09236]" />
+                                  ) : (
+                                    <Circle className="h-5 w-5 text-[#c5c5ba] hover:text-[#057b40]" />
+                                  )}
+                                </button>
 
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                <span className="truncate text-sm font-semibold text-[#282825]">
-                                  {item.name}
-                                </span>
-                                {item.cost_split &&
-                                  item.cost_split !== "shared" && (
-                                    <span className="rounded-full bg-[#e1edfe] px-2 py-0.2 text-[10px] font-bold text-[#2173be]">
-                                      {item.cost_split === "personal_a"
-                                        ? household.partner_a_name || "A"
-                                        : household.partner_b_name || "B"}
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="truncate text-sm font-semibold text-[#282825]">
+                                      {item.name}
                                     </span>
-                                  )}
-                              </div>
-                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
-                                <CalendarClock className="h-3 w-3 shrink-0 text-[#8f8f89]" />
-                                <span>{coverageLabel}</span>
-                                {hasGoal && (
-                                  <span className="inline-flex items-center gap-0.5 rounded-full bg-[#f6e6fc] px-2 py-0.2 font-sans text-[10px] font-bold text-[#7a2899]">
-                                    <Target className="h-2.5 w-2.5" />
-                                    {goalPct}%
-                                  </span>
-                                )}
-                                {record?.notes && (
-                                  <span className="rounded-full bg-[#ffe81a]/60 px-2 py-0.2 font-sans text-[10px] font-medium text-[#282825]">
-                                    {record.notes}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Right Side Amounts */}
-                          <div className="shrink-0 text-right">
-                            {displayedActual !== null ? (
-                              <>
-                                <div className="font-serif text-lg leading-tight text-[#282825]">
-                                  {formatCurrency(
-                                    displayedActual,
-                                    household.currency,
-                                    locale
-                                  )}
-                                </div>
-                                <div className="flex items-center justify-end gap-1 font-mono text-[11px]">
-                                  <span className="text-[#8f8f89] line-through">
-                                    {formatCurrency(
-                                      displayedExpected,
-                                      household.currency,
-                                      locale
+                                    {item.cost_split &&
+                                      item.cost_split !== "shared" && (
+                                        <span className="rounded-full bg-[#e1edfe] px-2 py-0.2 text-[10px] font-bold text-[#2173be]">
+                                          {item.cost_split === "personal_a"
+                                            ? household.partner_a_name || "A"
+                                            : household.partner_b_name || "B"}
+                                        </span>
+                                      )}
+                                  </div>
+                                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
+                                    <CalendarClock className="h-3 w-3 shrink-0 text-[#8f8f89]" />
+                                    <span>{coverageLabel}</span>
+                                    {hasPartialTx && (
+                                      <span className="inline-flex items-center gap-1 rounded-full bg-[#fdeee0] px-2 py-0.2 font-sans text-[10px] font-bold text-[#b85d10]">
+                                        <Layers className="h-2.5 w-2.5" />
+                                        {itemTxs.length}{" "}
+                                        {locale === "sv"
+                                          ? "delkvitton"
+                                          : "receipts"}
+                                      </span>
                                     )}
-                                  </span>
-                                  {variance !== null &&
-                                    Math.round(variance) !== 0 && (
-                                      <span
-                                        className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
-                                          variance < 0
-                                            ? "bg-[#e7f4eb] text-[#057b40]"
-                                            : "bg-[#fdeee0] text-[#b85d10]"
-                                        }`}
-                                      >
-                                        {variance > 0 ? "+" : ""}
+                                    {hasGoal && (
+                                      <span className="inline-flex items-center gap-0.5 rounded-full bg-[#f6e6fc] px-2 py-0.2 font-sans text-[10px] font-bold text-[#7a2899]">
+                                        <Target className="h-2.5 w-2.5" />
+                                        {goalPct}%
+                                      </span>
+                                    )}
+                                    {record?.notes && (
+                                      <span className="rounded-full bg-[#ffe81a]/60 px-2 py-0.2 font-sans text-[10px] font-medium text-[#282825]">
+                                        {record.notes}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Right Side Amounts */}
+                              <div className="shrink-0 text-right">
+                                {displayedActual !== null ? (
+                                  <>
+                                    <div className="font-serif text-lg leading-tight text-[#282825]">
+                                      {formatCurrency(
+                                        displayedActual,
+                                        household.currency,
+                                        locale
+                                      )}
+                                    </div>
+                                    <div className="flex items-center justify-end gap-1 font-mono text-[11px]">
+                                      <span className="text-[#8f8f89] line-through">
                                         {formatCurrency(
-                                          variance,
+                                          displayedExpected,
                                           household.currency,
                                           locale
                                         )}
                                       </span>
-                                    )}
+                                      {variance !== null &&
+                                        Math.round(variance) !== 0 && (
+                                          <span
+                                            className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
+                                              variance < 0
+                                                ? "bg-[#e7f4eb] text-[#057b40]"
+                                                : "bg-[#fdeee0] text-[#b85d10]"
+                                            }`}
+                                          >
+                                            {variance > 0 ? "+" : ""}
+                                            {formatCurrency(
+                                              variance,
+                                              household.currency,
+                                              locale
+                                            )}
+                                          </span>
+                                        )}
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div className="font-serif text-lg leading-tight text-[#282825]">
+                                      {formatCurrency(
+                                        displayedExpected,
+                                        household.currency,
+                                        locale
+                                      )}
+                                    </div>
+                                    <div className="text-[11px] font-medium text-[#057b40]">
+                                      {!isPaymentMonth &&
+                                      viewMode === "cashflow"
+                                        ? t.status.offMonth
+                                        : !isPaymentMonth &&
+                                          viewMode === "accrual"
+                                        ? t.status.offMonthAccrual
+                                        : locale === "sv"
+                                        ? "Tryck för utfall →"
+                                        : "Tap to confirm →"}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Inline Sub-Entries / Receipt Breakdown Progress Bar & Chips */}
+                            {hasPartialTx && (
+                              <div className="mt-2.5 pl-8">
+                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[#ecece9]">
+                                  <div
+                                    className={`h-full rounded-full transition-all ${
+                                      txSum > displayedExpected
+                                        ? "bg-[#eb5b55]"
+                                        : "bg-[#529a6a]"
+                                    }`}
+                                    style={{ width: `${txPct}%` }}
+                                  />
                                 </div>
-                              </>
-                            ) : (
-                              <>
-                                <div className="font-serif text-lg leading-tight text-[#282825]">
-                                  {formatCurrency(
-                                    displayedExpected,
-                                    household.currency,
-                                    locale
+                                <div className="mt-1.5 flex flex-wrap gap-1">
+                                  {itemTxs.slice(0, 4).map((tx) => (
+                                    <span
+                                      key={tx.id}
+                                      className="inline-flex items-center gap-1 rounded-full border border-[#c5c5ba]/70 bg-[#f8f8f7] px-2 py-0.5 text-[10px] font-medium text-[#64645e]"
+                                    >
+                                      <span className="truncate max-w-[110px] text-[#282825]">
+                                        {tx.description}
+                                      </span>
+                                      <span className="font-mono font-bold text-[#282825]">
+                                        {formatCurrency(
+                                          tx.amount,
+                                          household.currency,
+                                          locale
+                                        )}
+                                      </span>
+                                    </span>
+                                  ))}
+                                  {itemTxs.length > 4 && (
+                                    <span className="rounded-full bg-[#ecece9] px-2 py-0.5 font-mono text-[10px] text-[#64645e]">
+                                      +{itemTxs.length - 4}
+                                    </span>
                                   )}
                                 </div>
-                                <div className="text-[11px] font-medium text-[#057b40]">
-                                  {!isPaymentMonth && viewMode === "cashflow"
-                                    ? t.status.offMonth
-                                    : !isPaymentMonth && viewMode === "accrual"
-                                    ? t.status.offMonthAccrual
-                                    : locale === "sv"
-                                    ? "Tryck för utfall →"
-                                    : "Tap to confirm →"}
-                                </div>
-                              </>
+                              </div>
                             )}
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </section>
               );
             })}
           </div>
 
-          {/* Bottom Action Strip: Add Item, Add Group, Import Bank, Month Close */}
+          {/* Bottom Action Strip: Add Item, Add Group */}
           <div className="grid grid-cols-2 gap-2.5 pt-1">
             <button
               type="button"
@@ -1628,6 +1808,26 @@ export default function BudgetAppPage() {
             </button>
           </div>
         </main>
+      )}
+
+      {activeTab === "matrix" && (
+        <AnnualMatrixView
+          groups={groups}
+          items={items}
+          records={records}
+          activeYearMonth={yearMonth}
+          viewMode={viewMode}
+          currency={household.currency}
+          locale={locale}
+          onChangeViewMode={setViewMode}
+          onSelectMonthCell={(ym, itemId) => {
+            setYearMonth(ym);
+            setActiveTab("budget");
+            if (itemId) {
+              setSelectedItemId(itemId);
+            }
+          }}
+        />
       )}
 
       {activeTab === "insights" && (
@@ -1718,16 +1918,20 @@ export default function BudgetAppPage() {
         onMoveGroup={handleMoveGroup}
       />
 
-      {/* Bank / Credit Card CSV & XLSX Import Modal */}
+      {/* Bank / Credit Card CSV & XLSX Import Modal with Smart Merchant Rules */}
       <BankImportModal
         open={importModalOpen}
         yearMonth={yearMonth}
         groups={groups}
         items={items}
+        merchantRules={household.merchant_rules || []}
         currency={household.currency}
         locale={locale}
         onClose={() => setImportModalOpen(false)}
         onImportRows={handleImportRows}
+        onSaveMerchantRules={async (nextRules) => {
+          await handleUpdateHousehold({ merchant_rules: nextRules });
+        }}
       />
 
       {/* Month-End Close & Rollover Wizard Modal */}
@@ -1745,11 +1949,11 @@ export default function BudgetAppPage() {
 
       {/* Ellipsus-styled Mobile Bottom Navigation Bar */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-[#c5c5ba] bg-[#f4f4f2]/95 backdrop-blur-md">
-        <div className="mx-auto flex max-w-lg items-center justify-around py-2 px-4">
+        <div className="mx-auto flex max-w-lg items-center justify-around py-2 px-3">
           <button
             type="button"
             onClick={() => setActiveTab("budget")}
-            className={`flex flex-col items-center gap-0.5 rounded-full px-5 py-1.5 text-xs font-semibold transition ${
+            className={`flex flex-col items-center gap-0.5 rounded-full px-4 py-1.5 text-xs font-semibold transition ${
               activeTab === "budget"
                 ? "bg-[#e7f4eb] text-[#057b40] border border-[#282825]"
                 : "text-[#64645e] hover:text-[#282825]"
@@ -1761,8 +1965,21 @@ export default function BudgetAppPage() {
 
           <button
             type="button"
+            onClick={() => setActiveTab("matrix")}
+            className={`flex flex-col items-center gap-0.5 rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+              activeTab === "matrix"
+                ? "bg-[#f6e6fc] text-[#7a2899] border border-[#282825]"
+                : "text-[#64645e] hover:text-[#282825]"
+            }`}
+          >
+            <CalendarRange className="h-4 w-4" />
+            <span>{locale === "sv" ? "Årsöversikt" : "Year Matrix"}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("insights")}
-            className={`flex flex-col items-center gap-0.5 rounded-full px-5 py-1.5 text-xs font-semibold transition ${
+            className={`flex flex-col items-center gap-0.5 rounded-full px-4 py-1.5 text-xs font-semibold transition ${
               activeTab === "insights"
                 ? "bg-[#fdeee0] text-[#b85d10] border border-[#282825]"
                 : "text-[#64645e] hover:text-[#282825]"
@@ -1775,7 +1992,7 @@ export default function BudgetAppPage() {
           <button
             type="button"
             onClick={() => setActiveTab("household")}
-            className={`flex flex-col items-center gap-0.5 rounded-full px-5 py-1.5 text-xs font-semibold transition ${
+            className={`flex flex-col items-center gap-0.5 rounded-full px-4 py-1.5 text-xs font-semibold transition ${
               activeTab === "household"
                 ? "bg-[#e1edfe] text-[#2173be] border border-[#282825]"
                 : "text-[#64645e] hover:text-[#282825]"

@@ -187,7 +187,6 @@ export function computeMonthlyBudget(
               ? record.actual_amount / intervalDivisor
               : record.actual_amount;
         } else if (
-          item.entry_mode === "multi_entry" &&
           record.transactions &&
           record.transactions.length > 0
         ) {
@@ -388,6 +387,13 @@ export function createStarterDataset(
     split_mode: "proportional",
     partner_a_income: 36500,
     partner_b_income: 31000,
+    merchant_rules: [
+      { id: "rule-ica", pattern: "ica", targetItemId: "itm-groceries" },
+      { id: "rule-willys", pattern: "willys", targetItemId: "itm-groceries" },
+      { id: "rule-coop", pattern: "coop", targetItemId: "itm-groceries" },
+      { id: "rule-vattenfall", pattern: "vattenfall", targetItemId: "itm-electricity" },
+      { id: "rule-ellevio", pattern: "ellevio", targetItemId: "itm-electricity" },
+    ],
   };
 
   const groups: BudgetGroup[] = [

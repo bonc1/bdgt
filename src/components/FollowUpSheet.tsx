@@ -39,7 +39,8 @@ interface FollowUpSheetProps {
   onAddTransaction: (
     itemId: string,
     amount: number,
-    description: string
+    description: string,
+    spentOn?: string
   ) => Promise<void>;
   onDeleteTransaction: (itemId: string, txId: string) => Promise<void>;
   onEditItem: (computed: ComputedItemMonth) => void;
@@ -47,6 +48,7 @@ interface FollowUpSheetProps {
 
 export function FollowUpSheet({
   computed,
+  yearMonth,
   currency,
   locale,
   onClose,
@@ -61,6 +63,8 @@ export function FollowUpSheet({
   const [notesInput, setNotesInput] = useState<string>("");
   const [txAmount, setTxAmount] = useState<string>("");
   const [txDesc, setTxDesc] = useState<string>("");
+  const [txDate, setTxDate] = useState<string>("");
+  const [showSubEntries, setShowSubEntries] = useState<boolean>(false);
   const [saving, setSaving] = useState(false);
 
   // Prompt state when actual != expected or when item is one-time
@@ -72,8 +76,12 @@ export function FollowUpSheet({
   useEffect(() => {
     if (!computed) return;
     const { item, record, displayedActual } = computed;
+    const txs = record?.transactions || [];
+    const sum = txs.reduce((s, tx) => s + Number(tx.amount), 0);
     if (record?.actual_amount !== null && record?.actual_amount !== undefined) {
       setActualInput(String(record.actual_amount));
+    } else if (sum > 0) {
+      setActualInput(String(sum));
     } else if (displayedActual !== null) {
       setActualInput(String(displayedActual));
     } else {
@@ -82,9 +90,12 @@ export function FollowUpSheet({
     setNotesInput(record?.notes || "");
     setTxAmount("");
     setTxDesc("");
+    const today = new Date().toISOString().slice(0, 10);
+    setTxDate(today.startsWith(yearMonth) ? today : `${yearMonth}-15`);
+    setShowSubEntries(item.entry_mode === "multi_entry" || txs.length > 0);
     setUpdateFutureExpected(false);
     setOneTimeFutureInterval(0);
-  }, [computed]);
+  }, [computed, yearMonth]);
 
   if (!computed) return null;
 
@@ -122,10 +133,7 @@ export function FollowUpSheet({
   const handleOneTapConfirm = async () => {
     setSaving(true);
     try {
-      const amountToConfirm =
-        item.entry_mode === "multi_entry" && txSum > 0
-          ? txSum
-          : item.expected_amount;
+      const amountToConfirm = txSum > 0 ? txSum : item.expected_amount;
       await onConfirmActual(
         item.id,
         amountToConfirm,
@@ -164,8 +172,10 @@ export function FollowUpSheet({
       await onAddTransaction(
         item.id,
         val,
-        txDesc.trim() || (locale === "sv" ? "Delköp" : "Expense")
+        txDesc.trim() || (locale === "sv" ? "Delköp" : "Receipt"),
+        txDate || undefined
       );
+      setActualInput(String(txSum + val));
       setTxAmount("");
       setTxDesc("");
     } finally {
@@ -250,7 +260,7 @@ export function FollowUpSheet({
             <div className="mt-0.5 font-serif text-2xl text-[#057b40]">
               {isConfirmed && record?.actual_amount !== null
                 ? formatCurrency(record.actual_amount, currency, locale)
-                : item.entry_mode === "multi_entry" && txSum > 0
+                : txSum > 0
                 ? formatCurrency(txSum, currency, locale)
                 : "—"}
             </div>
@@ -259,20 +269,39 @@ export function FollowUpSheet({
                 ? t.status.confirmed
                 : !isPaymentMonth
                 ? t.status.offMonth
+                : txSum > 0
+                ? locale === "sv"
+                  ? `${transactions.length} delkvitton loggade`
+                  : `${transactions.length} receipts logged`
                 : t.status.pending}
             </div>
           </div>
         </div>
 
-        {/* Multi-entry partial spend logger */}
-        {item.entry_mode === "multi_entry" && (
-          <div className="mt-4 rounded-2xl border border-[#c5c5ba] bg-white p-3.5">
-            <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-[#64645e] mb-2.5">
-              <span className="flex items-center gap-1.5">
+        {/* Universal Sub-Entries / Partial Receipt Breakdown */}
+        {!showSubEntries && transactions.length === 0 ? (
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setShowSubEntries(true)}
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-2xl border border-dashed border-[#282825]/40 bg-white/70 py-2.5 px-3 text-xs font-semibold text-[#282825] hover:border-[#282825] hover:bg-white transition"
+            >
+              <Layers className="h-3.5 w-3.5 text-[#f09236]" />
+              <span>
+                {locale === "sv"
+                  ? "+ Dela upp i delkvitton / delutgifter (t.ex. ICA, Coop)"
+                  : "+ Log partial receipts / sub-entries (e.g. multiple trips)"}
+              </span>
+            </button>
+          </div>
+        ) : (
+          <div className="mt-4 rounded-2xl border border-[#282825] bg-white p-3.5">
+            <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-[#64645e] mb-2">
+              <span className="flex items-center gap-1.5 text-[#282825]">
                 <Layers className="h-3.5 w-3.5 text-[#f09236]" />
                 {locale === "sv"
-                  ? "Loggade delutgifter i månaden"
-                  : "Logged partial spends this month"}
+                  ? `Delkvitton & delutgifter (${transactions.length})`
+                  : `Sub-entries & receipts (${transactions.length})`}
               </span>
               <span className="font-mono text-[#282825]">
                 {formatCurrency(txSum, currency, locale)} /{" "}
@@ -283,7 +312,9 @@ export function FollowUpSheet({
             <div className="h-2 w-full overflow-hidden rounded-full bg-[#ecece9] mb-3">
               <div
                 className={`h-full rounded-full transition-all ${
-                  txSum > item.expected_amount ? "bg-[#eb5b55]" : "bg-[#f09236]"
+                  txSum > item.expected_amount
+                    ? "bg-[#eb5b55]"
+                    : "bg-[#529a6a]"
                 }`}
                 style={{
                   width: `${Math.min(
@@ -296,41 +327,51 @@ export function FollowUpSheet({
               />
             </div>
 
-            <form onSubmit={handleAddTx} className="flex gap-2">
-              <input
-                type="number"
-                inputMode="decimal"
-                placeholder={locale === "sv" ? "Belopp" : "Amount"}
-                value={txAmount}
-                onChange={(e) => setTxAmount(e.target.value)}
-                className="w-28 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-sm text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
-              />
-              <input
-                type="text"
-                placeholder={
-                  locale === "sv" ? "Notering (t.ex. ICA)" : "Note (e.g. Store)"
-                }
-                value={txDesc}
-                onChange={(e) => setTxDesc(e.target.value)}
-                className="flex-1 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-sm text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
-              />
-              <button
-                type="submit"
-                disabled={saving || !txAmount}
-                className="inline-flex items-center justify-center rounded-full bg-[#0c0d0d] px-4 py-2 text-sm font-semibold text-white hover:bg-[#282825] disabled:opacity-50"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
+            <form onSubmit={handleAddTx} className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder={locale === "sv" ? "Belopp" : "Amount"}
+                  value={txAmount}
+                  onChange={(e) => setTxAmount(e.target.value)}
+                  className="w-24 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-xs font-semibold text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
+                />
+                <input
+                  type="text"
+                  placeholder={
+                    locale === "sv"
+                      ? "Butik / notering (t.ex. ICA Maxi)"
+                      : "Store / note (e.g. Grocery)"
+                  }
+                  value={txDesc}
+                  onChange={(e) => setTxDesc(e.target.value)}
+                  className="flex-1 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-xs text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
+                />
+                <input
+                  type="date"
+                  value={txDate}
+                  onChange={(e) => setTxDate(e.target.value)}
+                  className="w-28 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-2.5 py-2 font-mono text-[11px] text-[#282825] focus:border-[#282825] focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={saving || !txAmount}
+                  className="inline-flex items-center justify-center rounded-full bg-[#0c0d0d] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#282825] disabled:opacity-50"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              </div>
             </form>
 
             {transactions.length > 0 && (
-              <div className="mt-3 max-h-36 space-y-1.5 overflow-y-auto pr-1">
+              <div className="mt-3 max-h-40 space-y-1.5 overflow-y-auto pr-1">
                 {transactions.map((tx) => (
                   <div
                     key={tx.id}
                     className="flex items-center justify-between rounded-xl bg-[#f8f8f7] px-3 py-2 text-xs border border-[#ecece9]"
                   >
-                    <div>
+                    <div className="min-w-0">
                       <span className="font-semibold text-[#282825]">
                         {tx.description}
                       </span>
@@ -338,7 +379,7 @@ export function FollowUpSheet({
                         {tx.spent_on}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 shrink-0">
                       <span className="font-mono font-bold text-[#282825]">
                         {formatCurrency(tx.amount, currency, locale)}
                       </span>
@@ -367,11 +408,11 @@ export function FollowUpSheet({
               className="flex w-full items-center justify-center gap-2 rounded-full border border-[#282825] bg-[#b5e3c4] py-3.5 px-4 text-sm font-bold text-[#282825] shadow-xs hover:bg-[#529a6a] hover:text-white active:scale-[0.99] transition"
             >
               <CheckCircle2 className="h-5 w-5" />
-              {item.entry_mode === "multi_entry" && txSum > 0
+              {txSum > 0
                 ? `${
                     locale === "sv"
-                      ? "Bekräfta loggad summa"
-                      : "Confirm logged total"
+                      ? "Bekräfta kvittosumma"
+                      : "Confirm receipts total"
                   } (${formatCurrency(txSum, currency, locale)})`
                 : `${t.actions.confirmExpected} (${formatCurrency(
                     item.expected_amount,
