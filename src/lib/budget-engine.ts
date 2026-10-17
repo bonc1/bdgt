@@ -163,7 +163,10 @@ export function computeMonthlyBudget(
       const record = recordMap.get(item.id) || null;
       const isPaymentMonth = isItemDueInMonth(item, monthNumber, yearMonth);
       const seasonalOrBase = getItemExpectedForMonth(item, monthNumber);
-      const baseExpected = record?.expected_snapshot ?? seasonalOrBase;
+      const baseExpected =
+        item.recurrence_interval_months === 0 && item.expected_amount === 0
+          ? 0
+          : record?.expected_snapshot ?? seasonalOrBase;
 
       const intervalDivisor =
         item.recurrence_interval_months > 0
@@ -225,6 +228,85 @@ export function computeMonthlyBudget(
     });
 }
 
+export interface GroupOverageStat {
+  historicalAvg: number;
+  monthsCount: number;
+  currentOverage: number;
+}
+
+export function computeGroupOverageStats(
+  groups: BudgetGroup[],
+  items: BudgetItem[],
+  records: MonthlyRecord[],
+  activeYearMonth: string,
+  viewMode: ViewMode = "cashflow",
+  locale: Locale = "sv"
+): Record<string, GroupOverageStat> {
+  const allConfirmedMonths = Array.from(
+    new Set(
+      records
+        .filter(
+          (r) =>
+            (r.status === "confirmed" && r.actual_amount !== null) ||
+            (r.transactions && r.transactions.length > 0)
+        )
+        .map((r) => r.year_month)
+    )
+  ).sort();
+
+  const priorMonths = allConfirmedMonths.filter((ym) => ym < activeYearMonth);
+  const referenceMonths =
+    priorMonths.length > 0 ? priorMonths : allConfirmedMonths;
+
+  const stats: Record<string, GroupOverageStat> = {};
+  for (const g of groups) {
+    stats[g.id] = { historicalAvg: 0, monthsCount: referenceMonths.length, currentOverage: 0 };
+  }
+
+  if (referenceMonths.length > 0) {
+    const sumByGroup: Record<string, number> = {};
+    for (const ym of referenceMonths) {
+      const computed = computeMonthlyBudget(groups, items, records, ym, viewMode, locale);
+      for (const c of computed) {
+        if (c.group.kind !== "expense") continue;
+        if (c.displayedActual === null) continue;
+        const isOneOff = c.item.recurrence_interval_months === 0;
+        const overage = isOneOff
+          ? Math.max(0, c.displayedActual)
+          : Math.max(0, c.displayedActual - c.displayedExpected);
+        if (overage > 0) {
+          sumByGroup[c.group.id] = (sumByGroup[c.group.id] || 0) + overage;
+        }
+      }
+    }
+    for (const g of groups) {
+      const total = sumByGroup[g.id] || 0;
+      const rawAvg = total / referenceMonths.length;
+      stats[g.id].historicalAvg =
+        rawAvg >= 100 ? Math.round(rawAvg / 50) * 50 : Math.round(rawAvg);
+    }
+  }
+
+  const activeComputed = computeMonthlyBudget(
+    groups,
+    items,
+    records,
+    activeYearMonth,
+    viewMode,
+    locale
+  );
+  for (const c of activeComputed) {
+    if (c.group.kind !== "expense") continue;
+    if (c.displayedActual === null) continue;
+    const overage = Math.max(0, c.displayedActual - c.displayedExpected);
+    if (overage > 0 && stats[c.group.id]) {
+      stats[c.group.id].currentOverage += Math.round(overage);
+    }
+  }
+
+  return stats;
+}
+
 export function computeMultiMonthTrends(
   groups: BudgetGroup[],
   items: BudgetItem[],
@@ -267,6 +349,14 @@ export function computeMultiMonthTrends(
       } else {
         expenses += c.effectiveAmount;
         expectedExpenses += c.displayedExpected;
+      }
+    }
+
+    if (!filterItemId) {
+      for (const g of groups) {
+        if (g.kind === "expense" && g.overage_budget && g.overage_budget > 0) {
+          expectedExpenses += g.overage_budget;
+        }
       }
     }
 

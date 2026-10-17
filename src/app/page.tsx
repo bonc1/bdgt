@@ -48,6 +48,7 @@ import {
   translations,
 } from "@/lib/i18n";
 import {
+  computeGroupOverageStats,
   computeMonthlyBudget,
   createStarterDataset,
   getCurrentYearMonth,
@@ -372,7 +373,29 @@ export default function BudgetAppPage() {
         }
       }
       if (memRes.data) setMembers(memRes.data as HouseholdMember[]);
-      if (grpRes.data) setGroups(grpRes.data as BudgetGroup[]);
+      if (grpRes.data) {
+        let localOverageMap: Record<string, number> = {};
+        try {
+          const rawOverage = localStorage.getItem(
+            "bdgt_group_overage_budgets_v1"
+          );
+          if (rawOverage) localOverageMap = JSON.parse(rawOverage);
+        } catch {
+          // ignore
+        }
+        const hhOverageMap =
+          (hhRes.data as Household | null)?.group_overage_budgets || {};
+        setGroups(
+          (grpRes.data as BudgetGroup[]).map((g) => ({
+            ...g,
+            overage_budget:
+              g.overage_budget ??
+              hhOverageMap[g.id] ??
+              localOverageMap[g.id] ??
+              0,
+          }))
+        );
+      }
       if (itmRes.data) setItems(itmRes.data as BudgetItem[]);
       if (recRes.data) {
         const txsByRecord = new Map<string, typeof txRes.data>();
@@ -449,6 +472,19 @@ export default function BudgetAppPage() {
     [groups, items, records, yearMonth, viewMode, locale]
   );
 
+  const groupOverageStats = useMemo(
+    () =>
+      computeGroupOverageStats(
+        groups,
+        items,
+        records,
+        yearMonth,
+        viewMode,
+        locale
+      ),
+    [groups, items, records, yearMonth, viewMode, locale]
+  );
+
   // Filtered computed items for the Budget tab
   const filteredComputedItems = useMemo(() => {
     if (budgetFilter === "unconfirmed") {
@@ -498,6 +534,22 @@ export default function BudgetAppPage() {
       }
     }
 
+    let totalGroupBuffer = 0;
+    let totalUsedOverage = 0;
+    for (const g of groups) {
+      if (g.kind === "expense") {
+        const buf = Number(
+          g.overage_budget ?? household.group_overage_budgets?.[g.id] ?? 0
+        );
+        if (buf > 0) {
+          totalGroupBuffer += buf;
+        }
+        totalUsedOverage += groupOverageStats[g.id]?.currentOverage || 0;
+      }
+    }
+
+    expectedExpense += totalGroupBuffer;
+
     const leftToSpend = effectiveIncome - effectiveExpense - effectiveSavings;
     const expectedLeft = expectedIncome - expectedExpense - expectedSavings;
 
@@ -508,12 +560,14 @@ export default function BudgetAppPage() {
       effectiveExpense,
       expectedSavings,
       effectiveSavings,
+      totalGroupBuffer,
+      totalUsedOverage,
       leftToSpend,
       expectedLeft,
       dueItemsCount,
       confirmedCount,
     };
-  }, [computedItems]);
+  }, [computedItems, groups, household.group_overage_budgets, groupOverageStats]);
 
   const handleConfirmActual = async (
     itemId: string,
@@ -752,7 +806,7 @@ export default function BudgetAppPage() {
         > = {
           name: sample.description,
           group_id: targetGroupId,
-          expected_amount: Math.round(latestMonthSum),
+          expected_amount: isOnce ? 0 : Math.round(latestMonthSum),
           entry_mode: latestMonthRows.length > 1 ? "multi_entry" : "single_bill",
           recurrence_interval_months: isOnce ? 0 : 1,
           one_time_year_month: isOnce ? latestMonth : null,
@@ -820,7 +874,7 @@ export default function BudgetAppPage() {
         recordsBatch.push({
           itemId: itemIdToUse,
           targetYM: ym,
-          expectedSnapshot: Math.round(latestMonthSum),
+          expectedSnapshot: isOnce ? 0 : Math.round(latestMonthSum),
           monthRows: mRows,
         });
       }
@@ -1366,21 +1420,117 @@ export default function BudgetAppPage() {
     if (selectedItemId === id) setSelectedItemId(null);
   };
 
+  const persistGroupOverageLocal = (groupId: string, amount: number) => {
+    try {
+      const raw = localStorage.getItem("bdgt_group_overage_budgets_v1");
+      const map: Record<string, number> = raw ? JSON.parse(raw) : {};
+      if (amount > 0) {
+        map[groupId] = amount;
+      } else {
+        delete map[groupId];
+      }
+      localStorage.setItem(
+        "bdgt_group_overage_budgets_v1",
+        JSON.stringify(map)
+      );
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleQuickSetGroupOverageBudget = async (
+    groupId: string,
+    amount: number
+  ) => {
+    const cleanAmt = Math.max(0, Math.round(amount));
+    persistGroupOverageLocal(groupId, cleanAmt);
+    setGroups((prev) =>
+      prev.map((g) =>
+        g.id === groupId ? { ...g, overage_budget: cleanAmt } : g
+      )
+    );
+    const nextMap = {
+      ...(household.group_overage_budgets || {}),
+      [groupId]: cleanAmt,
+    };
+    setHousehold((prev) => ({ ...prev, group_overage_budgets: nextMap }));
+    if (userId && dbReady) {
+      await supabase
+        .from("budget_groups")
+        .update({ overage_budget: cleanAmt })
+        .eq("id", groupId);
+    }
+  };
+
+  const legacyConfirmedOneOffIds = useMemo(() => {
+    const confirmedItemIds = new Set(
+      records.filter((r) => r.status === "confirmed").map((r) => r.item_id)
+    );
+    return items
+      .filter(
+        (it) =>
+          it.recurrence_interval_months === 0 &&
+          it.expected_amount > 0 &&
+          confirmedItemIds.has(it.id)
+      )
+      .map((it) => it.id);
+  }, [items, records]);
+
+  const handleConvertLegacyOneOffsToUnplanned = async () => {
+    if (legacyConfirmedOneOffIds.length === 0) return;
+    const idSet = new Set(legacyConfirmedOneOffIds);
+    setItems((prev) =>
+      prev.map((it) =>
+        idSet.has(it.id) ? { ...it, expected_amount: 0 } : it
+      )
+    );
+    setRecords((prev) =>
+      prev.map((r) =>
+        idSet.has(r.item_id) ? { ...r, expected_snapshot: 0 } : r
+      )
+    );
+    if (userId && dbReady) {
+      await supabase
+        .from("budget_items")
+        .update({ expected_amount: 0 })
+        .in("id", legacyConfirmedOneOffIds);
+      await supabase
+        .from("monthly_records")
+        .update({ expected_snapshot: 0 })
+        .in("item_id", legacyConfirmedOneOffIds);
+    }
+  };
+
   const handleSaveGroup = async (
     name: string,
     kind: BudgetGroupKind,
     color: string,
-    existingId?: string
+    existingId?: string,
+    overageBudget?: number | null
   ) => {
+    const cleanOverage =
+      kind === "expense" && overageBudget && overageBudget > 0
+        ? Math.round(overageBudget)
+        : 0;
+
     if (existingId) {
+      persistGroupOverageLocal(existingId, cleanOverage);
       if (userId && dbReady) {
         await supabase
           .from("budget_groups")
           .update({ name, kind, color })
           .eq("id", existingId);
+        await supabase
+          .from("budget_groups")
+          .update({ overage_budget: cleanOverage })
+          .eq("id", existingId);
       }
       setGroups((prev) =>
-        prev.map((g) => (g.id === existingId ? { ...g, name, kind, color } : g))
+        prev.map((g) =>
+          g.id === existingId
+            ? { ...g, name, kind, color, overage_budget: cleanOverage }
+            : g
+        )
       );
       return;
     }
@@ -1399,19 +1549,32 @@ export default function BudgetAppPage() {
         .select()
         .single();
       if (inserted) {
-        setGroups((prev) => [...prev, inserted as BudgetGroup]);
+        persistGroupOverageLocal(inserted.id, cleanOverage);
+        if (cleanOverage > 0) {
+          await supabase
+            .from("budget_groups")
+            .update({ overage_budget: cleanOverage })
+            .eq("id", inserted.id);
+        }
+        setGroups((prev) => [
+          ...prev,
+          { ...(inserted as BudgetGroup), overage_budget: cleanOverage },
+        ]);
         return;
       }
     }
 
+    const newGrpId = `grp-${Date.now()}`;
+    persistGroupOverageLocal(newGrpId, cleanOverage);
     const newGrp: BudgetGroup = {
-      id: `grp-${Date.now()}`,
+      id: newGrpId,
       household_id: household.id,
       name,
       kind,
       icon: "Folder",
       color,
       sort_order: groups.length + 1,
+      overage_budget: cleanOverage,
     };
     setGroups((prev) => [...prev, newGrp]);
   };
@@ -1886,19 +2049,56 @@ export default function BudgetAppPage() {
             </div>
           )}
 
+          {/* 1-Tap Banner to convert previously imported confirmed one-time items to 0 kr expected baseline */}
+          {legacyConfirmedOneOffIds.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#282825] bg-[#fdeee0] px-3.5 py-2.5 text-xs text-[#282825] shadow-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <Sparkles className="h-4 w-4 text-[#b85d10] shrink-0" />
+                <span className="font-medium leading-snug">
+                  {locale === "sv"
+                    ? `${legacyConfirmedOneOffIds.length} tidigare engångsposter har förväntad budget = utfall.`
+                    : `${legacyConfirmedOneOffIds.length} past one-time items have expected budget = actual.`}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleConvertLegacyOneOffsToUnplanned}
+                className="shrink-0 rounded-full border border-[#282825] bg-white px-3 py-1 text-[11px] font-bold text-[#282825] hover:bg-[#faca9e] transition"
+              >
+                {locale === "sv"
+                  ? "Ändra till 0 kr budget (endast utfall)"
+                  : "Set expected to 0 (actual only)"}
+              </button>
+            </div>
+          )}
+
           {/* Groups & Budget Items List */}
           <div className="space-y-4">
             {groups.map((group, idx) => {
               const groupItems = filteredComputedItems.filter(
                 (c) => c.group.id === group.id
               );
+              const groupBuffer =
+                group.kind === "expense"
+                  ? Number(
+                      group.overage_budget ??
+                        household.group_overage_budgets?.[group.id] ??
+                        0
+                    )
+                  : 0;
+              const groupStat = groupOverageStats[group.id] || {
+                historicalAvg: 0,
+                monthsCount: 0,
+                currentOverage: 0,
+              };
               if (budgetFilter !== "all" && groupItems.length === 0) {
                 return null;
               }
-              const groupExpected = groupItems.reduce(
+              const itemsExpected = groupItems.reduce(
                 (s, c) => s + c.displayedExpected,
                 0
               );
+              const groupExpected = itemsExpected + groupBuffer;
               const groupEffective = groupItems.reduce(
                 (s, c) => s + c.effectiveAmount,
                 0
@@ -2555,6 +2755,154 @@ export default function BudgetAppPage() {
                         </div>
                       </div>
                     )}
+
+                    {/* Group-Level Overage & One-Time Buffer Bar / Suggestion */}
+                    {group.kind === "expense" &&
+                      (groupBuffer > 0 ||
+                        groupStat.historicalAvg > 0 ||
+                        groupStat.currentOverage > 0) && (
+                        <div className="px-4 pb-2.5">
+                          {groupBuffer > 0 ? (
+                            <div
+                              onClick={() => {
+                                setEditingGroup(group);
+                                setGroupModalOpen(true);
+                              }}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  setEditingGroup(group);
+                                  setGroupModalOpen(true);
+                                }
+                              }}
+                              className="cursor-pointer rounded-2xl border border-[#282825]/25 bg-white/90 px-3 py-2 hover:border-[#282825] transition"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
+                                <span className="inline-flex items-center gap-1 font-bold text-[#282825]">
+                                  <Sparkles className="h-3 w-3 text-[#b85d10]" />
+                                  <span>
+                                    {locale === "sv"
+                                      ? "Gruppbuffert (engångs & överdrag):"
+                                      : "Group buffer (one-offs & overages):"}
+                                  </span>
+                                  <span className="font-mono">
+                                    {formatCurrency(
+                                      groupStat.currentOverage,
+                                      household.currency,
+                                      locale
+                                    )}{" "}
+                                    /{" "}
+                                    {formatCurrency(
+                                      groupBuffer,
+                                      household.currency,
+                                      locale
+                                    )}
+                                  </span>
+                                </span>
+                                <span
+                                  className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-bold ${
+                                    groupStat.currentOverage <= groupBuffer
+                                      ? "bg-[#e7f4eb] text-[#282825] border border-[#b5e3c4]"
+                                      : "bg-[#fdeeed] text-[#b81a14] border border-[#eb5b55]"
+                                  }`}
+                                >
+                                  {groupStat.currentOverage <= groupBuffer
+                                    ? locale === "sv"
+                                      ? `${formatCurrency(
+                                          groupBuffer - groupStat.currentOverage,
+                                          household.currency,
+                                          locale
+                                        )} kvar`
+                                      : `${formatCurrency(
+                                          groupBuffer - groupStat.currentOverage,
+                                          household.currency,
+                                          locale
+                                        )} left`
+                                    : locale === "sv"
+                                    ? `+${formatCurrency(
+                                        groupStat.currentOverage - groupBuffer,
+                                        household.currency,
+                                        locale
+                                      )} över buffert`
+                                    : `+${formatCurrency(
+                                        groupStat.currentOverage - groupBuffer,
+                                        household.currency,
+                                        locale
+                                      )} over buffer`}
+                                </span>
+                              </div>
+                              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-[#ecece9]">
+                                <div
+                                  className={`h-full rounded-full transition-all ${
+                                    groupStat.currentOverage > groupBuffer
+                                      ? "bg-[#eb5b55]"
+                                      : "bg-[#f09236]"
+                                  }`}
+                                  style={{
+                                    width: `${Math.min(
+                                      100,
+                                      Math.round(
+                                        (groupStat.currentOverage /
+                                          groupBuffer) *
+                                          100
+                                      )
+                                    )}%`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#282825]/25 bg-white/85 px-3 py-1.5 text-[11px]">
+                              <span className="inline-flex items-center gap-1 text-[#282825] font-medium">
+                                <Sparkles className="h-3 w-3 text-[#b85d10] shrink-0" />
+                                <span>
+                                  {groupStat.historicalAvg > 0
+                                    ? locale === "sv"
+                                      ? `Snitt engångs/överdrag: ${formatCurrency(
+                                          groupStat.historicalAvg,
+                                          household.currency,
+                                          locale
+                                        )}/mån`
+                                      : `Avg one-offs/overages: ${formatCurrency(
+                                          groupStat.historicalAvg,
+                                          household.currency,
+                                          locale
+                                        )}/mo`
+                                    : locale === "sv"
+                                    ? `Engångs/överdrag nu: ${formatCurrency(
+                                        groupStat.currentOverage,
+                                        household.currency,
+                                        locale
+                                      )}`
+                                    : `One-offs/overages now: ${formatCurrency(
+                                        groupStat.currentOverage,
+                                        household.currency,
+                                        locale
+                                      )}`}
+                                </span>
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleQuickSetGroupOverageBudget(
+                                      group.id,
+                                      groupStat.historicalAvg ||
+                                        groupStat.currentOverage
+                                    )
+                                  }
+                                  className="rounded-full border border-[#282825] bg-[#fdeee0] px-2.5 py-0.5 text-[10px] font-bold text-[#282825] hover:bg-[#faca9e] transition"
+                                >
+                                  {locale === "sv"
+                                    ? "+ Lägg till som gruppbuffert"
+                                    : "+ Add as group buffer"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
                   </div>
 
                   {/* Items inside group (when not collapsed) */}
@@ -2989,6 +3337,13 @@ export default function BudgetAppPage() {
       <GroupFormModal
         open={groupModalOpen}
         editingGroup={editingGroup}
+        historicalOverageAvg={
+          editingGroup ? groupOverageStats[editingGroup.id]?.historicalAvg || 0 : 0
+        }
+        historicalMonthsCount={
+          editingGroup ? groupOverageStats[editingGroup.id]?.monthsCount || 0 : 0
+        }
+        currency={household.currency}
         locale={locale}
         onClose={() => {
           setGroupModalOpen(false);

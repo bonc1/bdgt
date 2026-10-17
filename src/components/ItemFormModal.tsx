@@ -176,11 +176,13 @@ export function ItemFormModal({
       const parsedTarget = parseFloat(targetAmount);
       const parsedSaved = parseFloat(currentSaved);
 
+      const isUnplannedOneOff = unexpectedMode && isOneTime;
+
       await onSaveItem(
         {
           name: name.trim(),
           group_id: groupId,
-          expected_amount: amount,
+          expected_amount: isUnplannedOneOff ? 0 : amount,
           entry_mode: entryMode,
           recurrence_interval_months: finalInterval,
           one_time_year_month: isOneTime ? yearMonth : null,
@@ -700,13 +702,17 @@ export function ItemFormModal({
 interface GroupFormModalProps {
   open: boolean;
   editingGroup?: BudgetGroup | null;
+  historicalOverageAvg?: number;
+  historicalMonthsCount?: number;
+  currency?: string;
   locale: Locale;
   onClose: () => void;
   onSaveGroup: (
     name: string,
     kind: BudgetGroupKind,
     color: string,
-    existingId?: string
+    existingId?: string,
+    overageBudget?: number | null
   ) => Promise<void>;
   onDeleteGroup?: (id: string) => Promise<void>;
   onMoveGroup?: (id: string, direction: "up" | "down") => Promise<void>;
@@ -723,6 +729,9 @@ const HIGHLIGHTER_COLORS = [
 export function GroupFormModal({
   open,
   editingGroup,
+  historicalOverageAvg = 0,
+  historicalMonthsCount = 0,
+  currency = "SEK",
   locale,
   onClose,
   onSaveGroup,
@@ -733,6 +742,7 @@ export function GroupFormModal({
   const [name, setName] = useState("");
   const [kind, setKind] = useState<BudgetGroupKind>("expense");
   const [color, setColor] = useState("blue");
+  const [overageBudget, setOverageBudget] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -741,10 +751,16 @@ export function GroupFormModal({
       setName(editingGroup.name);
       setKind(editingGroup.kind);
       setColor(editingGroup.color || "blue");
+      setOverageBudget(
+        editingGroup.overage_budget && editingGroup.overage_budget > 0
+          ? String(editingGroup.overage_budget)
+          : ""
+      );
     } else {
       setName("");
       setKind("expense");
       setColor("blue");
+      setOverageBudget("");
     }
   }, [open, editingGroup]);
 
@@ -755,7 +771,18 @@ export function GroupFormModal({
     if (!name.trim()) return;
     setSaving(true);
     try {
-      await onSaveGroup(name.trim(), kind, color, editingGroup?.id);
+      const parsedOverage = parseFloat(overageBudget);
+      const finalOverage =
+        kind === "expense" && !isNaN(parsedOverage) && parsedOverage > 0
+          ? Math.round(parsedOverage)
+          : 0;
+      await onSaveGroup(
+        name.trim(),
+        kind,
+        color,
+        editingGroup?.id,
+        finalOverage
+      );
       setName("");
       onClose();
     } finally {
@@ -769,7 +796,7 @@ export function GroupFormModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-t-3xl border-t border-[#282825] bg-[#f4f4f2] p-5 pb-8 text-[#282825] shadow-sheet"
+        className="w-full max-w-lg rounded-t-3xl border-t border-[#282825] bg-[#f4f4f2] p-5 pb-8 text-[#282825] shadow-sheet max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-[#c5c5ba]" />
@@ -822,7 +849,7 @@ export function GroupFormModal({
                     onClick={() => setKind(k)}
                     className={`rounded-full border py-2.5 text-xs font-semibold transition ${
                       kind === k
-                        ? "border-[#282825] bg-[#e7f4eb] text-[#057b40]"
+                        ? "border-[#282825] bg-[#b5e3c4] text-[#282825]"
                         : "border-[#c5c5ba] bg-white text-[#64645e]"
                     }`}
                   >
@@ -832,6 +859,79 @@ export function GroupFormModal({
               )}
             </div>
           </div>
+
+          {/* Group Overage & Unplanned One-Time Buffer (Expense Groups only) */}
+          {kind === "expense" && (
+            <div className="rounded-2xl border border-[#282825] bg-[#fdeee0] p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <label className="flex items-center gap-1.5 text-xs font-bold text-[#282825]">
+                  <Sparkles className="h-4 w-4 text-[#b85d10]" />
+                  <span>
+                    {locale === "sv"
+                      ? "Gruppbuffert för engångsköp & överdrag"
+                      : "Group buffer for one-offs & overages"}
+                  </span>
+                </label>
+                {historicalOverageAvg > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setOverageBudget(String(historicalOverageAvg))}
+                    className="rounded-full border border-[#282825] bg-white px-2.5 py-1 text-[11px] font-bold text-[#282825] hover:bg-[#faca9e] transition"
+                  >
+                    {locale === "sv"
+                      ? `Använd snitt (${formatCurrency(historicalOverageAvg, currency, locale)}/mån)`
+                      : `Use avg (${formatCurrency(historicalOverageAvg, currency, locale)}/mo)`}
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-[#64645e] leading-relaxed">
+                {locale === "sv"
+                  ? `Reservera en månadsbuffert på gruppnivå för oförutsedda engångsköp och poster som går över budget.${
+                      historicalMonthsCount > 0
+                        ? ` Baserat på ${historicalMonthsCount} tidigare ${
+                            historicalMonthsCount === 1 ? "månad" : "månader"
+                          } är snittet i denna grupp ${formatCurrency(
+                            historicalOverageAvg,
+                            currency,
+                            locale
+                          )}/mån.`
+                        : ""
+                    }`
+                  : `Reserve a monthly group-level buffer for unplanned one-time purchases and item overages.${
+                      historicalMonthsCount > 0
+                        ? ` Historical average across ${historicalMonthsCount} ${
+                            historicalMonthsCount === 1 ? "month" : "months"
+                          }: ${formatCurrency(historicalOverageAvg, currency, locale)}/mo.`
+                        : ""
+                    }`}
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="any"
+                  value={overageBudget}
+                  onChange={(e) => setOverageBudget(e.target.value)}
+                  placeholder={
+                    historicalOverageAvg > 0
+                      ? String(historicalOverageAvg)
+                      : "0"
+                  }
+                  className="w-full rounded-full border border-[#282825] bg-white px-4 py-2 font-mono text-sm font-bold text-[#282825] placeholder:text-[#8f8f89] focus:outline-none"
+                />
+                {overageBudget && Number(overageBudget) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setOverageBudget("0")}
+                    className="shrink-0 rounded-full border border-[#c5c5ba] bg-white px-3 py-2 text-xs font-semibold text-[#64645e] hover:text-[#282825]"
+                  >
+                    {locale === "sv" ? "Nollställ" : "Clear"}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Ellipsus Highlighter Color Picker */}
           <div>

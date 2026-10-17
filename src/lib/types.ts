@@ -36,6 +36,7 @@ export interface Household {
   partner_a_income?: number;
   partner_b_income?: number;
   merchant_rules?: MerchantRule[];
+  group_overage_budgets?: Record<string, number>;
 }
 
 export interface HouseholdMember {
@@ -54,6 +55,7 @@ export interface BudgetGroup {
   icon: string;
   color: string;
   sort_order: number;
+  overage_budget?: number | null;
 }
 
 export interface BudgetItem {
