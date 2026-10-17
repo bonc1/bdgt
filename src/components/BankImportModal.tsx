@@ -14,6 +14,7 @@ import {
   Plus,
   ChevronDown,
   ChevronRight,
+  SlidersHorizontal,
 } from "lucide-react";
 import {
   BudgetGroup,
@@ -52,6 +53,7 @@ interface ParsedCandidate {
   date: string;
   description: string;
   amount: number;
+  rawSignedAmount: number;
   actionType: "existing_item" | "new_once" | "new_monthly" | "skip";
   targetItemId: string;
   targetGroupId: string;
@@ -60,25 +62,149 @@ interface ParsedCandidate {
   rulePattern: string;
 }
 
+/**
+ * Robust numeric parser for Swedish & international bank formats:
+ * - Handles Unicode minus sign (\u2212 '−'), en-dash ('–'), em-dash ('—')
+ * - Handles trailing minus ('1 245,00-')
+ * - Handles accounting parentheses ('(1 245,00)')
+ * - Handles space / non-breaking space thousand separators ('1 245,50' or '1.245,50')
+ */
 function parseNumericAmount(raw: unknown): number | null {
   if (typeof raw === "number") {
     return isNaN(raw) ? null : raw;
   }
-  if (typeof raw !== "string") return null;
-  const cleaned = raw
-    .replace(/\u00A0/g, "")
-    .replace(/\s+/g, "")
-    .replace(/kr|SEK|EUR|USD|NOK|DKK/gi, "")
-    .replace(",", ".");
-  const num = parseFloat(cleaned);
-  return isNaN(num) ? null : num;
+  if (raw === null || raw === undefined) return null;
+  let str = String(raw).trim();
+  if (!str) return null;
+
+  // Normalize all Unicode minus/dash characters to standard ASCII '-'
+  str = str.replace(/[\u2212\u2012\u2013\u2014\uFE63\uFF0D−–—]/g, "-");
+
+  // Detect accounting parentheses e.g. (123,45) or trailing minus e.g. 123,45-
+  let isNegative = false;
+  if (/^\(.*\)$/.test(str)) {
+    isNegative = true;
+    str = str.slice(1, -1);
+  } else if (str.endsWith("-")) {
+    isNegative = true;
+    str = str.slice(0, -1);
+  } else if (str.startsWith("-")) {
+    isNegative = true;
+    str = str.slice(1);
+  } else if (str.startsWith("+")) {
+    str = str.slice(1);
+  }
+
+  // Strip currency symbols and all whitespace (including non-breaking spaces)
+  str = str
+    .replace(/[\u00A0\u202F\s]+/g, "")
+    .replace(/kr|SEK|EUR|USD|NOK|DKK|GBP/gi, "");
+
+  // Handle thousand separators vs decimal separator:
+  // If both '.' and ',' exist: whichever comes last is the decimal separator
+  const lastComma = str.lastIndexOf(",");
+  const lastDot = str.lastIndexOf(".");
+  if (lastComma !== -1 && lastDot !== -1) {
+    if (lastComma > lastDot) {
+      // 1.234,56 -> 1234.56
+      str = str.replace(/\./g, "").replace(",", ".");
+    } else {
+      // 1,234.56 -> 1234.56
+      str = str.replace(/,/g, "");
+    }
+  } else if (lastComma !== -1) {
+    // Only comma present: in Swedish/European exports comma is decimal separator
+    str = str.replace(",", ".");
+  }
+
+  // Strip any remaining non-numeric chars except '.'
+  str = str.replace(/[^0-9.]/g, "");
+  if (!str) return null;
+
+  const num = parseFloat(str);
+  if (isNaN(num)) return null;
+  return isNegative ? -num : num;
+}
+
+/**
+ * Fix truncated worksheet '!ref' range in bank .xlsx exports (e.g. Swedbank / Sparbanken)
+ * where <dimension ref="A1:L2"/> is written in XML even though hundreds of rows exist.
+ */
+function ensureFullWorksheetRange(ws: XLSX.WorkSheet) {
+  let maxRow = 0;
+  let maxCol = 0;
+  for (const key of Object.keys(ws)) {
+    if (key.startsWith("!")) continue;
+    const cell = XLSX.utils.decode_cell(key);
+    if (cell.r > maxRow) maxRow = cell.r;
+    if (cell.c > maxCol) maxCol = cell.c;
+  }
+  if (maxRow > 0 || maxCol > 0) {
+    ws["!ref"] = XLSX.utils.encode_range({
+      s: { r: 0, c: 0 },
+      e: { r: maxRow, c: maxCol },
+    });
+  }
+}
+
+/**
+ * Parse CSV text directly (handles comma, semicolon, tab, quotes, and Swedish encodings)
+ */
+function parseCsvTextToRows(text: string): string[][] {
+  const lines = text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .filter((l) => l.trim().length > 0);
+
+  if (lines.length === 0) return [];
+
+  // Detect delimiter by checking the first 10 lines
+  const sampleLines = lines.slice(0, Math.min(10, lines.length));
+  let bestDelim = ",";
+  let bestCount = 0;
+  for (const delim of [";", ",", "\t"]) {
+    const counts = sampleLines.map((l) => l.split(delim).length);
+    const maxCols = Math.max(...counts);
+    if (maxCols > bestCount) {
+      bestCount = maxCols;
+      bestDelim = delim;
+    }
+  }
+
+  return lines.map((line) => {
+    const result: string[] = [];
+    let current = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === bestDelim && !inQuotes) {
+        result.push(current.trim());
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  });
 }
 
 function extractCleanMerchantKeyword(desc: string): string {
   const cleaned = desc
     .toLowerCase()
     .replace(/[0-9#*_/\\.,-]+/g, " ")
-    .replace(/\b(ab|aktiebolag|se|sweden|stockholm|göteborg|malmö|kortköp|autogiro|betalning)\b/g, " ")
+    .replace(
+      /\b(ab|aktiebolag|se|sweden|stockholm|göteborg|malmö|kortköp|autogiro|betalning|swish)\b/g,
+      " "
+    )
     .trim()
     .replace(/\s+/g, " ");
   const words = cleaned.split(" ").filter((w) => w.length >= 2);
@@ -93,7 +219,7 @@ function matchItemWithRules(
 ): { item?: BudgetItem; matchedRule?: MerchantRule } {
   const lower = desc.toLowerCase();
 
-  // 1. Check user's saved Smart Merchant Rules first!
+  // 1. Check user's saved Smart Merchant Rules first
   for (const rule of rules) {
     const pat = rule.pattern.trim().toLowerCase();
     if (pat && lower.includes(pat)) {
@@ -214,6 +340,14 @@ export function BankImportModal({
   onImportRows,
   onSaveMerchantRules,
 }: BankImportModalProps) {
+  const [rawGrid, setRawGrid] = useState<unknown[][]>([]);
+  const [headerRowIdx, setHeaderRowIdx] = useState<number>(0);
+  const [dateColIdx, setDateColIdx] = useState<number>(0);
+  const [descColIdx, setDescColIdx] = useState<number>(1);
+  const [secondaryDescColIdx, setSecondaryDescColIdx] = useState<number>(-1);
+  const [amountColIdx, setAmountColIdx] = useState<number>(2);
+  const [showColumnMapper, setShowColumnMapper] = useState<boolean>(false);
+
   const [candidates, setCandidates] = useState<ParsedCandidate[]>([]);
   const [fileName, setFileName] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -230,58 +364,58 @@ export function BankImportModal({
     groups.find((g) => g.kind === "expense")?.id || groups[0]?.id || "";
   const defaultItemId = items[0]?.id || "";
 
-  const processRawRows = (rows: unknown[][]) => {
-    setErrorMsg(null);
-    if (!rows || rows.length === 0) {
-      setErrorMsg(
-        locale === "sv"
-          ? "Filen verkar vara tom."
-          : "The uploaded file appears to be empty."
-      );
-      return;
-    }
-
-    let dateCol = 0;
-    let descCol = 1;
-    let amountCol = 2;
-    let startRow = 0;
-
-    for (let r = 0; r < Math.min(5, rows.length); r++) {
-      const row = rows[r].map((c) => String(c ?? "").toLowerCase().trim());
-      const dIdx = row.findIndex((h) =>
-        /datum|date|bokföringsdag|transaktionsdag|valutadag/.test(h)
-      );
-      const tIdx = row.findIndex((h) =>
-        /text|beskrivning|mottagare|rubrik|description|merchant|specifikation|transaktion/.test(
-          h
-        )
-      );
-      const aIdx = row.findIndex((h) =>
-        /belopp|amount|summa|utgifter|debit|kostnad/.test(h)
-      );
-
-      if (tIdx !== -1 && aIdx !== -1) {
-        dateCol = dIdx !== -1 ? dIdx : 0;
-        descCol = tIdx;
-        amountCol = aIdx;
-        startRow = r + 1;
-        break;
-      }
-    }
-
+  const buildCandidatesFromColumns = (
+    rows: unknown[][],
+    startRow: number,
+    dCol: number,
+    tCol: number,
+    tCol2: number,
+    aCol: number
+  ) => {
     const parsed: ParsedCandidate[] = [];
+
     for (let i = startRow; i < rows.length; i++) {
       const r = rows[i];
       if (!r || r.length < 2) continue;
 
-      const rawDesc = String(r[descCol] ?? "").trim();
-      const rawAmt = parseNumericAmount(r[amountCol]);
+      const primaryText = String(r[tCol] ?? "").trim();
+      const secondaryText =
+        tCol2 !== -1 && tCol2 !== tCol ? String(r[tCol2] ?? "").trim() : "";
+
+      let rawDesc = primaryText;
+      if (secondaryText && !primaryText) {
+        rawDesc = secondaryText;
+      } else if (
+        primaryText &&
+        secondaryText &&
+        primaryText.toLowerCase() !== secondaryText.toLowerCase()
+      ) {
+        // E.g. Sparbanken Referens="ICA KVANTUM" + Beskrivning="Kortköp"
+        const genericLabels = ["kortköp", "autogiro", "betalning", "överföring", "swish"];
+        if (genericLabels.includes(primaryText.toLowerCase())) {
+          rawDesc = `${secondaryText} (${primaryText})`;
+        } else if (genericLabels.includes(secondaryText.toLowerCase())) {
+          rawDesc = primaryText;
+        } else {
+          rawDesc = `${primaryText} — ${secondaryText}`;
+        }
+      }
+
+      const rawAmt = parseNumericAmount(r[aCol]);
       if (!rawDesc || rawAmt === null || rawAmt === 0) continue;
 
+      // Skip accidental summary/header rows
+      if (
+        /^(belopp|amount|summa|totalt|saldo)$/i.test(rawDesc)
+      ) {
+        continue;
+      }
+
       const absAmount = Math.abs(rawAmt);
-      const rawDate = String(r[dateCol] ?? "").trim();
-      const cleanDate = /^\d{4}-\d{2}-\d{2}/.test(rawDate)
-        ? rawDate.slice(0, 10)
+      const rawDate = String(r[dCol] ?? "").trim();
+      const dateMatch = rawDate.match(/(\d{4}[-/.]\d{2}[-/.]\d{2})/);
+      const cleanDate = dateMatch
+        ? dateMatch[1].replace(/[/.]/g, "-")
         : `${yearMonth}-15`;
 
       const { item: matchedItem, matchedRule } = matchItemWithRules(
@@ -296,6 +430,7 @@ export function BankImportModal({
         date: cleanDate,
         description: rawDesc,
         amount: absAmount,
+        rawSignedAmount: rawAmt,
         actionType: matchedItem ? "existing_item" : "new_once",
         targetItemId: matchedItem?.id || defaultItemId,
         targetGroupId: matchedItem?.group_id || defaultExpenseGroup,
@@ -308,27 +443,207 @@ export function BankImportModal({
     if (parsed.length === 0) {
       setErrorMsg(
         locale === "sv"
-          ? "Kunde inte hitta några transaktionsrader med belopp. Kontrollera att filen har kolumner för Text/Beskrivning och Belopp."
-          : "Could not find transaction rows with amounts. Make sure the file has Description and Amount columns."
+          ? "Kunde inte hitta några transaktionsrader med dessa kolumnval. Prova att justera kolumnerna nedan."
+          : "Could not find transaction rows with these column selections. Try adjusting the columns below."
+      );
+      setShowColumnMapper(true);
+    } else {
+      setErrorMsg(null);
+    }
+
+    setCandidates(parsed.slice(0, 250));
+  };
+
+  const processRawRows = (rows: unknown[][]) => {
+    setErrorMsg(null);
+    const nonEmptyRows = (rows || []).filter(
+      (r) => Array.isArray(r) && r.some((cell) => String(cell ?? "").trim() !== "")
+    );
+
+    if (nonEmptyRows.length === 0) {
+      setErrorMsg(
+        locale === "sv"
+          ? "Filen verkar vara tom."
+          : "The uploaded file appears to be empty."
       );
       return;
     }
 
-    setCandidates(parsed.slice(0, 100));
+    setRawGrid(nonEmptyRows);
+
+    // Scan up to the first 30 rows to find the table header row
+    // (Swedbank / Sparbanken often has metadata rows at the top before the header)
+    let detectedHeaderRow = -1;
+    let dCol = 0;
+    let tCol = 1;
+    let tCol2 = -1;
+    let aCol = 2;
+
+    for (let r = 0; r < Math.min(30, nonEmptyRows.length); r++) {
+      const row = nonEmptyRows[r].map((c) =>
+        String(c ?? "")
+          .toLowerCase()
+          .trim()
+      );
+
+      // Date column: match transaktionsdag / bokföringsdag / valutadag / datum / date
+      const dIdx = row.findIndex((h) =>
+        /^(transaktionsdag|bokföringsdag|bokf\.?dag|valutadag|datum|date|köpdag)$/.test(
+          h
+        ) || /bokföringsdag|transaktionsdag|datum|date/.test(h)
+      );
+
+      // Primary merchant/reference column: in Sparbanken "Referens" holds the merchant name
+      // while "Beskrivning" holds "Kortköp" / "Swish" / etc.
+      const refIdx = row.findIndex((h) =>
+        /^(referens|mottagare|specifikation|text|merchant|butik|inköpsställe)$/.test(
+          h
+        )
+      );
+      const descIdx = row.findIndex(
+        (h, idx) =>
+          idx !== dIdx &&
+          idx !== refIdx &&
+          /^(beskrivning|text|rubrik|description|transaktion|meddelande|notering)$/.test(
+            h
+          )
+      );
+
+      // Amount column: match "belopp" (NOT "bokfört saldo" or "saldo")
+      const aIdx = row.findIndex(
+        (h) =>
+          !/saldo|balance/.test(h) &&
+          /^(belopp|amount|summa|utgift|utgifter|debit|kostnad|insättning\/uttag)$/.test(
+            h
+          )
+      );
+      const fallbackAIdx =
+        aIdx !== -1
+          ? aIdx
+          : row.findIndex(
+              (h) =>
+                !/saldo|balance/.test(h) &&
+                /belopp|amount|summa/.test(h)
+            );
+
+      const primaryTextIdx = refIdx !== -1 ? refIdx : descIdx;
+      const secondaryTextIdx =
+        refIdx !== -1 && descIdx !== -1 ? descIdx : -1;
+
+      if (primaryTextIdx !== -1 && fallbackAIdx !== -1) {
+        detectedHeaderRow = r;
+        dCol = dIdx !== -1 ? dIdx : 0;
+        tCol = primaryTextIdx;
+        tCol2 = secondaryTextIdx;
+        aCol = fallbackAIdx;
+        break;
+      }
+    }
+
+    // Fallback heuristic if no named header row matched:
+    // Inspect data rows directly to find a date column, a text column, and a numeric amount column
+    if (detectedHeaderRow === -1) {
+      for (let r = 0; r < Math.min(15, nonEmptyRows.length); r++) {
+        const row = nonEmptyRows[r].map((c) => String(c ?? "").trim());
+        if (row.length < 2) continue;
+        const foundDateCol = row.findIndex((val) =>
+          /^\d{4}[-/.]\d{2}[-/.]\d{2}/.test(val)
+        );
+        // Find numeric columns (excluding date & account number columns)
+        const numCols: number[] = [];
+        row.forEach((val, idx) => {
+          if (idx === foundDateCol) return;
+          if (/^\d{4}[-/.]\d{2}[-/.]\d{2}$/.test(val)) return;
+          const parsedNum = parseNumericAmount(val);
+          if (
+            parsedNum !== null &&
+            (/[-−,.\s]/.test(val) || Math.abs(parsedNum) < 1000000)
+          ) {
+            numCols.push(idx);
+          }
+        });
+
+        if (foundDateCol !== -1 && numCols.length > 0) {
+          detectedHeaderRow = Math.max(0, r - 1);
+          dCol = foundDateCol;
+          // In Sparbanken, if there are 2 numeric columns at the end (Belopp, Bokfört saldo),
+          // Belopp is the second-to-last or the one before Saldo
+          aCol =
+            numCols.length >= 2
+              ? numCols[numCols.length - 2]
+              : numCols[0];
+          // Pick text columns between dateCol and amountCol
+          const candidateTextCols = row
+            .map((val, idx) => ({ val, idx }))
+            .filter(
+              (x) =>
+                x.idx > dCol &&
+                x.idx !== aCol &&
+                x.val.length > 1 &&
+                !/^\d{4}[-/.]\d{2}[-/.]\d{2}$/.test(x.val) &&
+                parseNumericAmount(x.val) === null
+            );
+          if (candidateTextCols.length > 0) {
+            tCol = candidateTextCols[0].idx;
+            tCol2 =
+              candidateTextCols.length > 1 ? candidateTextCols[1].idx : -1;
+          }
+          break;
+        }
+      }
+    }
+
+    const startRow = detectedHeaderRow !== -1 ? detectedHeaderRow + 1 : 0;
+    setHeaderRowIdx(Math.max(0, detectedHeaderRow));
+    setDateColIdx(dCol);
+    setDescColIdx(tCol);
+    setSecondaryDescColIdx(tCol2);
+    setAmountColIdx(aCol);
+
+    buildCandidatesFromColumns(
+      nonEmptyRows,
+      startRow,
+      dCol,
+      tCol,
+      tCol2,
+      aCol
+    );
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
+    setErrorMsg(null);
+
     try {
       const buffer = await file.arrayBuffer();
+      const lowerName = file.name.toLowerCase();
+
+      // If CSV or TXT: decode with UTF-8 (fallback to ISO-8859-1 / Windows-1252 used by Swedbank/Sparbanken!)
+      if (lowerName.endsWith(".csv") || lowerName.endsWith(".txt")) {
+        let text = new TextDecoder("utf-8").decode(buffer);
+        if (text.includes("\uFFFD")) {
+          // Contains replacement character -> file is ISO-8859-1 / Windows-1252 encoded!
+          text = new TextDecoder("iso-8859-1").decode(buffer);
+        }
+        const csvRows = parseCsvTextToRows(text);
+        processRawRows(csvRows);
+        return;
+      }
+
+      // Excel (.xlsx / .xls)
       const workbook = XLSX.read(buffer, { type: "array", raw: false });
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
+
+      // Critical fix for Sparbanken / Swedbank .xlsx files whose '!ref' is truncated to row 1-2
+      ensureFullWorksheetRange(worksheet);
+
       const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
         header: 1,
         defval: "",
+        blankrows: false,
       });
       processRawRows(rows);
     } catch {
@@ -341,14 +656,93 @@ export function BankImportModal({
   };
 
   const handleLoadSample = () => {
-    setFileName("kontoutdrag_oktober.xlsx (Exempel)");
+    setFileName("sparbanken_transaktioner.csv (Exempel)");
     processRawRows([
-      ["Bokföringsdag", "Specifikation", "Belopp"],
-      [`${yearMonth}-04`, "ICA Kvantum Liljeholmen", "-1245,00"],
-      [`${yearMonth}-08`, "Coop Konsum", "-540,00"],
-      [`${yearMonth}-09`, "Ellevio / Vattenfall El", "-1920,00"],
-      [`${yearMonth}-14`, "Tandläkare Folktandvården", "-1450,00"],
-      [`${yearMonth}-18`, "Willys Hemma", "-680,00"],
+      ["* Transaktioner Period 2026-10-01 - 2026-10-31"],
+      [
+        "Radnummer",
+        "Clearingnummer",
+        "Kontonummer",
+        "Produkt",
+        "Valuta",
+        "Bokföringsdag",
+        "Transaktionsdag",
+        "Valutadag",
+        "Referens",
+        "Beskrivning",
+        "Belopp",
+        "Bokfört saldo",
+      ],
+      [
+        "1",
+        "81234",
+        "123456789",
+        "Privatkonto",
+        "SEK",
+        `${yearMonth}-18`,
+        `${yearMonth}-18`,
+        `${yearMonth}-18`,
+        "WILLYS HEMMA",
+        "Kortköp",
+        "−680,00",
+        "24 120,00",
+      ],
+      [
+        "2",
+        "81234",
+        "123456789",
+        "Privatkonto",
+        "SEK",
+        `${yearMonth}-14`,
+        `${yearMonth}-14`,
+        `${yearMonth}-14`,
+        "FOLKTANDVÅRDEN",
+        "Kortköp",
+        "−1 450,00",
+        "24 800,00",
+      ],
+      [
+        "3",
+        "81234",
+        "123456789",
+        "Privatkonto",
+        "SEK",
+        `${yearMonth}-09`,
+        `${yearMonth}-09`,
+        `${yearMonth}-09`,
+        "VATTENFALL AB",
+        "Autogiro",
+        "−1 920,00",
+        "26 250,00",
+      ],
+      [
+        "4",
+        "81234",
+        "123456789",
+        "Privatkonto",
+        "SEK",
+        `${yearMonth}-08`,
+        `${yearMonth}-08`,
+        `${yearMonth}-08`,
+        "COOP KONSUM",
+        "Kortköp",
+        "−540,00",
+        "28 170,00",
+      ],
+      [
+        "5",
+        "81234",
+        "123456789",
+        "Privatkonto",
+        "SEK",
+        `${yearMonth}-04`,
+        `${yearMonth}-04`,
+        `${yearMonth}-04`,
+        "ICA KVANTUM",
+        "Kortköp",
+        "−1 245,00",
+        "28 710,00",
+      ],
     ]);
   };
 
@@ -381,26 +775,31 @@ export function BankImportModal({
 
   const activeCount = candidates.filter((c) => c.actionType !== "skip").length;
 
-  // Group summary preview: show how many rows map to the same existing item
-  const groupedItemCounts = candidates.reduce<Record<string, { count: number; sum: number }>>(
-    (acc, c) => {
-      if (c.actionType === "existing_item" && c.targetItemId) {
-        const cur = acc[c.targetItemId] || { count: 0, sum: 0 };
-        acc[c.targetItemId] = {
-          count: cur.count + 1,
-          sum: cur.sum + c.amount,
-        };
-      }
-      return acc;
-    },
-    {}
-  );
+  const groupedItemCounts = candidates.reduce<
+    Record<string, { count: number; sum: number }>
+  >((acc, c) => {
+    if (c.actionType === "existing_item" && c.targetItemId) {
+      const cur = acc[c.targetItemId] || { count: 0, sum: 0 };
+      acc[c.targetItemId] = {
+        count: cur.count + 1,
+        sum: cur.sum + c.amount,
+      };
+    }
+    return acc;
+  }, {});
+
+  const headerLabels: string[] =
+    rawGrid.length > headerRowIdx
+      ? (rawGrid[headerRowIdx] || []).map((c, idx) => {
+          const txt = String(c ?? "").trim();
+          return txt ? `${idx + 1}: ${txt}` : `Kolumn ${idx + 1}`;
+        })
+      : [];
 
   const handleConfirmImport = async () => {
     if (activeCount === 0) return;
     setImporting(true);
     try {
-      // 1. Persist any newly checked Smart Merchant Rules
       const updatedRules = [...merchantRules];
       let rulesChanged = false;
 
@@ -438,7 +837,6 @@ export function BankImportModal({
         await onSaveMerchantRules(updatedRules);
       }
 
-      // 2. Import the rows
       await onImportRows(
         candidates.map((c) => ({
           date: c.date,
@@ -452,6 +850,7 @@ export function BankImportModal({
         }))
       );
       setCandidates([]);
+      setRawGrid([]);
       setFileName(null);
       onClose();
     } finally {
@@ -479,8 +878,8 @@ export function BankImportModal({
             </h3>
             <p className="text-xs text-[#64645e]">
               {locale === "sv"
-                ? "Ladda upp .xlsx eller .csv. Flera rader mot samma post summeras som delkvitton."
-                : "Upload .xlsx or .csv. Multiple rows matched to the same item sum as sub-receipts."}
+                ? "Stöd för Sparbanken, Swedbank, SEB, Nordea, SHB, ICA m.fl. (.csv & .xlsx)"
+                : "Supports Sparbanken, Swedbank, SEB, Nordea, Amex, Revolut (.csv & .xlsx)"}
             </p>
           </div>
           <button
@@ -518,7 +917,7 @@ export function BankImportModal({
             <div className="border-t border-[#ecece9] p-3 space-y-2.5 bg-[#f8f8f7]">
               <p className="text-[11px] text-[#64645e]">
                 {locale === "sv"
-                  ? "Transaktioner vars text innehåller sökordet kopplas automatiskt till rätt budgetpost."
+                  ? "Transaktioner vars text/referens innehåller sökordet kopplas automatiskt till rätt budgetpost."
                   : "Transactions containing the keyword automatically map to the target budget item."}
               </p>
 
@@ -613,11 +1012,128 @@ export function BankImportModal({
             >
               <Sparkles className="h-3.5 w-3.5" />
               <span>
-                {locale === "sv" ? "Testa med exempelfil" : "Load sample rows"}
+                {locale === "sv"
+                  ? "Testa Sparbanken-exempel"
+                  : "Load sample rows"}
               </span>
             </button>
           </div>
         </div>
+
+        {/* Manual Column Mapping Adjuster (when file is loaded) */}
+        {rawGrid.length > 0 && headerLabels.length > 1 && (
+          <div className="mt-3 rounded-2xl border border-[#c5c5ba] bg-white p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-[#282825] flex items-center gap-1.5">
+                <SlidersHorizontal className="h-3.5 w-3.5 text-[#057b40]" />
+                {locale === "sv"
+                  ? "Identifierade kolumner i filen"
+                  : "Detected file columns"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowColumnMapper((v) => !v)}
+                className="text-[11px] font-semibold text-[#2173be] underline"
+              >
+                {showColumnMapper
+                  ? locale === "sv"
+                    ? "Dölj"
+                    : "Hide"
+                  : locale === "sv"
+                  ? "Ändra kolumner"
+                  : "Change columns"}
+              </button>
+            </div>
+
+            {showColumnMapper && (
+              <div className="mt-2.5 grid grid-cols-3 gap-2 pt-2 border-t border-[#ecece9] text-[11px]">
+                <div>
+                  <label className="block font-semibold text-[#64645e] mb-1">
+                    {locale === "sv" ? "Datum" : "Date"}
+                  </label>
+                  <select
+                    value={dateColIdx}
+                    onChange={(e) => {
+                      const nextD = Number(e.target.value);
+                      setDateColIdx(nextD);
+                      buildCandidatesFromColumns(
+                        rawGrid,
+                        headerRowIdx + 1,
+                        nextD,
+                        descColIdx,
+                        secondaryDescColIdx,
+                        amountColIdx
+                      );
+                    }}
+                    className="w-full rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2 py-1.5 text-[#282825]"
+                  >
+                    {headerLabels.map((lbl, idx) => (
+                      <option key={idx} value={idx}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-[#64645e] mb-1">
+                    {locale === "sv" ? "Referens / Text" : "Merchant / Text"}
+                  </label>
+                  <select
+                    value={descColIdx}
+                    onChange={(e) => {
+                      const nextT = Number(e.target.value);
+                      setDescColIdx(nextT);
+                      buildCandidatesFromColumns(
+                        rawGrid,
+                        headerRowIdx + 1,
+                        dateColIdx,
+                        nextT,
+                        secondaryDescColIdx,
+                        amountColIdx
+                      );
+                    }}
+                    className="w-full rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2 py-1.5 text-[#282825]"
+                  >
+                    {headerLabels.map((lbl, idx) => (
+                      <option key={idx} value={idx}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-[#64645e] mb-1">
+                    {locale === "sv" ? "Belopp" : "Amount"}
+                  </label>
+                  <select
+                    value={amountColIdx}
+                    onChange={(e) => {
+                      const nextA = Number(e.target.value);
+                      setAmountColIdx(nextA);
+                      buildCandidatesFromColumns(
+                        rawGrid,
+                        headerRowIdx + 1,
+                        dateColIdx,
+                        descColIdx,
+                        secondaryDescColIdx,
+                        nextA
+                      );
+                    }}
+                    className="w-full rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2 py-1.5 text-[#282825]"
+                  >
+                    {headerLabels.map((lbl, idx) => (
+                      <option key={idx} value={idx}>
+                        {lbl}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {errorMsg && (
           <div className="mt-3 flex items-center gap-2 rounded-2xl bg-[#fdeeed] border border-[#eb5b55] p-3 text-xs font-medium text-[#b81a14]">
