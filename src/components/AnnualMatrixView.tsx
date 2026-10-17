@@ -288,13 +288,13 @@ export function AnnualMatrixView({
                       className="cursor-pointer bg-[#f8f8f7] hover:bg-[#ecece9] transition font-semibold"
                     >
                       <td className="sticky left-0 z-10 border-r border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 text-[#282825]">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-start gap-1.5">
                           {isCollapsed ? (
-                            <ChevronRightIcon className="h-3.5 w-3.5 text-[#64645e]" />
+                            <ChevronRightIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#64645e]" />
                           ) : (
-                            <ChevronDown className="h-3.5 w-3.5 text-[#64645e]" />
+                            <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#64645e]" />
                           )}
-                          <span className="truncate font-serif text-sm">
+                          <span className="font-serif text-sm leading-snug break-words whitespace-normal">
                             {group.name}
                           </span>
                         </div>
@@ -338,8 +338,8 @@ export function AnnualMatrixView({
                             key={item.id}
                             className="hover:bg-[#f8f8f7] transition"
                           >
-                            <td className="sticky left-0 z-10 border-r border-[#c5c5ba] bg-white px-3 py-2 pl-6 text-[11px] font-medium text-[#282825]">
-                              <div className="truncate max-w-[145px]" title={item.name}>
+                            <td className="sticky left-0 z-10 border-r border-[#c5c5ba] bg-white px-3 py-2 pl-5 text-[11px] font-medium text-[#282825]">
+                              <div className="leading-snug break-words whitespace-normal max-w-[155px]">
                                 {item.name}
                               </div>
                             </td>

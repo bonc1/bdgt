@@ -648,10 +648,7 @@ export default function BudgetAppPage() {
     monthRows: ImportedRowAction[]
   ) => {
     const monthSum = monthRows.reduce((s, r) => s + r.amount, 0);
-    const noteText =
-      monthRows.length === 1
-        ? `Import: ${monthRows[0].description} (${monthRows[0].date})`
-        : `Import: ${monthRows.length} transaktioner`;
+    const noteText: string | null = null;
 
     const subTxs =
       monthRows.length > 1
@@ -1628,8 +1625,9 @@ export default function BudgetAppPage() {
                       isCollapsed ? "" : "border-b border-[#c5c5ba]/70"
                     }`}
                   >
-                    <div className="flex items-center justify-between px-4 py-3">
-                      <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="px-4 pt-3 pb-2.5">
+                      {/* Row 1: Group Name (breaks lines naturally) + Action Icons */}
+                      <div className="flex items-start justify-between gap-2">
                         <button
                           type="button"
                           onClick={() =>
@@ -1638,65 +1636,66 @@ export default function BudgetAppPage() {
                               [group.id]: !prev[group.id],
                             }))
                           }
-                          className="flex items-center gap-1.5 text-left hover:opacity-80 transition min-w-0"
+                          className="flex items-start gap-2 text-left hover:opacity-80 transition min-w-0 flex-1"
                         >
-                          {isCollapsed ? (
-                            <ChevronRight className="h-4 w-4 shrink-0 text-[#282825]" />
-                          ) : (
-                            <ChevronDown className="h-4 w-4 shrink-0 text-[#282825]" />
-                          )}
-                          <span
-                            className={`h-2.5 w-2.5 shrink-0 rounded-full ${hl.dot}`}
-                          />
-                          <h2 className="truncate font-serif text-lg tracking-wide text-[#282825]">
+                          <span className="mt-1 flex items-center gap-1 shrink-0">
+                            {isCollapsed ? (
+                              <ChevronRight className="h-4 w-4 text-[#282825]" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4 text-[#282825]" />
+                            )}
+                            <span
+                              className={`h-2.5 w-2.5 rounded-full ${hl.dot}`}
+                            />
+                          </span>
+                          <h2 className="font-serif text-xl leading-snug break-words text-[#282825]">
                             {group.name}
                           </h2>
                         </button>
 
-                        {dueInGroup.length > 0 && (
-                          <span className="ml-1 rounded-full bg-white/80 px-2 py-0.5 font-mono text-[10px] font-bold text-[#282825] border border-[#282825]/15 shrink-0">
-                            {confirmedInGroup.length}/{dueInGroup.length} ✓
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingGroup(group);
+                              setGroupModalOpen(true);
+                            }}
+                            className="rounded-full border border-[#282825]/20 bg-white/70 p-1.5 text-[#64645e] hover:bg-white hover:text-[#282825] transition"
+                            title={
+                              locale === "sv" ? "Redigera grupp" : "Edit group"
+                            }
+                          >
+                            <Settings2 className="h-3.5 w-3.5" />
+                          </button>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingGroup(group);
-                            setGroupModalOpen(true);
-                          }}
-                          className="rounded-full p-1 text-[#64645e] hover:text-[#282825] shrink-0"
-                          title={
-                            locale === "sv" ? "Redigera grupp" : "Edit group"
-                          }
-                        >
-                          <Settings2 className="h-3.5 w-3.5" />
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingItem(null);
+                              setUnexpectedMode(false);
+                              setDefaultGroupIdForNew(group.id);
+                              setItemModalOpen(true);
+                            }}
+                            className="rounded-full border border-[#282825]/30 bg-white/85 p-1.5 text-[#282825] hover:bg-white transition"
+                            title={t.actions.addItem}
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="text-right font-mono text-xs">
-                          <div>
-                            <span className="font-bold text-[#282825]">
-                              {formatCurrency(
-                                groupEffective,
-                                household.currency,
-                                locale
-                              )}
+                      {/* Row 2: Clean Subtitle with Confirmed Count & Subtotal */}
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 pl-6 font-mono text-xs">
+                        <div className="flex items-center gap-2 text-[11px] text-[#64645e]">
+                          {dueInGroup.length > 0 && (
+                            <span className="rounded-full bg-white/80 px-2 py-0.5 font-bold text-[#282825] border border-[#282825]/15">
+                              {confirmedInGroup.length}/{dueInGroup.length}{" "}
+                              {locale === "sv" ? "klara" : "done"}
                             </span>
-                            <span className="text-[#64645e]">
-                              {" "}
-                              /{" "}
-                              {formatCurrency(
-                                groupExpected,
-                                household.currency,
-                                locale
-                              )}
-                            </span>
-                          </div>
+                          )}
                           {Math.round(groupVariance) !== 0 && (
-                            <div
-                              className={`text-[10px] font-bold ${
+                            <span
+                              className={`font-bold ${
                                 group.kind === "income"
                                   ? groupVariance > 0
                                     ? "text-[#057b40]"
@@ -1711,31 +1710,35 @@ export default function BudgetAppPage() {
                                 groupVariance,
                                 household.currency,
                                 locale
-                              )}{" "}
-                              {locale === "sv" ? "avvikelse" : "var"}
-                            </div>
+                              )}
+                            </span>
                           )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setEditingItem(null);
-                            setUnexpectedMode(false);
-                            setDefaultGroupIdForNew(group.id);
-                            setItemModalOpen(true);
-                          }}
-                          className="rounded-full border border-[#282825]/30 bg-white/80 p-1 text-[#282825] hover:bg-white transition"
-                          title={t.actions.addItem}
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                        </button>
+                        <div>
+                          <span className="font-bold text-[#282825]">
+                            {formatCurrency(
+                              groupEffective,
+                              household.currency,
+                              locale
+                            )}
+                          </span>
+                          <span className="text-[#64645e]">
+                            {" "}
+                            /{" "}
+                            {formatCurrency(
+                              groupExpected,
+                              household.currency,
+                              locale
+                            )}
+                          </span>
+                        </div>
                       </div>
                     </div>
 
                     {/* Group Confirmation Progress Bar */}
                     {dueInGroup.length > 0 && (
-                      <div className="px-4 pb-2">
+                      <div className="px-4 pb-2.5">
                         <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/75 border border-[#282825]/10">
                           <div
                             className={`h-full rounded-full transition-all ${hl.dot}`}
@@ -1786,6 +1789,10 @@ export default function BudgetAppPage() {
                               )
                             )
                           : 0;
+                        const cleanUserNote =
+                          record?.notes && !record.notes.startsWith("Import:")
+                            ? record.notes
+                            : null;
 
                         return (
                           <div
@@ -1804,8 +1811,8 @@ export default function BudgetAppPage() {
                                 : ""
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="flex items-start gap-3 min-w-0">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-2.5 min-w-0 flex-1">
                                 {/* Inline 1-Tap Quick-Confirm Button */}
                                 <button
                                   type="button"
@@ -1830,9 +1837,9 @@ export default function BudgetAppPage() {
                                   )}
                                 </button>
 
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="truncate text-sm font-semibold text-[#282825]">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="text-sm font-semibold leading-snug break-words text-[#282825]">
                                       {item.name}
                                     </span>
                                     {item.cost_split &&
@@ -1844,8 +1851,7 @@ export default function BudgetAppPage() {
                                         </span>
                                       )}
                                   </div>
-                                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
-                                    <CalendarClock className="h-3 w-3 shrink-0 text-[#8f8f89]" />
+                                  <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
                                     <span>{coverageLabel}</span>
                                     {hasPartialTx && (
                                       <span className="inline-flex items-center gap-1 rounded-full bg-[#fdeee0] px-2 py-0.2 font-sans text-[10px] font-bold text-[#b85d10]">
@@ -1862,9 +1868,9 @@ export default function BudgetAppPage() {
                                         {goalPct}%
                                       </span>
                                     )}
-                                    {record?.notes && (
+                                    {cleanUserNote && (
                                       <span className="rounded-full bg-[#ffe81a]/60 px-2 py-0.2 font-sans text-[10px] font-medium text-[#282825]">
-                                        {record.notes}
+                                        {cleanUserNote}
                                       </span>
                                     )}
                                   </div>

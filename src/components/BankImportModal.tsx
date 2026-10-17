@@ -1400,113 +1400,105 @@ export function BankImportModal({
                 return (
                   <div
                     key={mg.merchantKey}
-                    className={`rounded-2xl border p-3 text-xs transition ${
+                    className={`rounded-2xl border p-3.5 text-xs transition ${
                       mg.actionType === "skip"
                         ? "border-[#c5c5ba] bg-[#ecece9] opacity-60"
                         : "border-[#282825] bg-white"
                     }`}
                   >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-bold text-sm text-[#282825]">
-                            {mg.displayName}
-                          </span>
-
-                          {/* Auto-detected category badge */}
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                              mg.isIncome
-                                ? "bg-[#e7f4eb] text-[#057b40]"
-                                : "bg-[#fdeee0] text-[#b85d10]"
-                            }`}
-                          >
-                            {mg.suggestedCategoryLabel}
-                          </span>
-
-                          {/* Recurring multi-month badge */}
-                          {isRecurringGroup && (
-                            <span className="inline-flex items-center gap-0.5 rounded-full bg-[#e1edfe] px-2 py-0.5 text-[10px] font-bold text-[#2173be]">
-                              <Repeat className="h-2.5 w-2.5" />
-                              {locale === "sv"
-                                ? `${mg.distinctMonths.length} mån`
-                                : `${mg.distinctMonths.length} mos`}
-                            </span>
-                          )}
-
-                          {mg.matchedRulePattern && (
-                            <span className="inline-flex items-center gap-0.5 rounded-full bg-[#f6e6fc] px-2 py-0.5 text-[10px] font-bold text-[#7a2899]">
-                              <Zap className="h-2.5 w-2.5" />
-                              {mg.matchedRulePattern}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="mt-1 flex items-center gap-2 font-mono text-[11px] text-[#64645e]">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedKeys((prev) => ({
-                                ...prev,
-                                [mg.merchantKey]: !prev[mg.merchantKey],
-                              }))
-                            }
-                            className="inline-flex items-center gap-0.5 font-sans font-semibold text-[#2173be] hover:underline"
-                          >
-                            {isExpanded ? (
-                              <ChevronDown className="h-3 w-3" />
-                            ) : (
-                              <ChevronRight className="h-3 w-3" />
-                            )}
-                            <span>
-                              {txCount}{" "}
-                              {locale === "sv"
-                                ? txCount === 1
-                                  ? "transaktion"
-                                  : "transaktioner"
-                                : txCount === 1
-                                ? "transaction"
-                                : "transactions"}
-                            </span>
-                          </button>
-                          <span>•</span>
-                          <span>
-                            {locale === "sv" ? "Senaste:" : "Latest:"}{" "}
-                            {formatCurrency(mg.latestAmount, currency, locale)}
-                          </span>
-                        </div>
-                      </div>
+                    {/* Row 1: Merchant Title (breaks lines naturally) + Amount */}
+                    <div className="flex items-start justify-between gap-3">
+                      <h4 className="font-serif text-lg leading-snug break-words text-[#282825] flex-1">
+                        {mg.displayName}
+                      </h4>
 
                       <div className="text-right shrink-0">
                         <div
-                          className={`font-serif text-lg leading-tight ${
+                          className={`font-serif text-lg leading-none ${
                             mg.isIncome ? "text-[#057b40]" : "text-[#282825]"
                           }`}
                         >
                           {mg.isIncome ? "+" : ""}
-                          {formatCurrency(filteredSum, currency, locale)}
+                          {formatCurrency(mg.latestAmount, currency, locale)}
                         </div>
                         {txCount > 1 && (
-                          <div className="font-mono text-[10px] text-[#64645e]">
-                            {locale === "sv" ? "Totalt" : "Total"} ({txCount}x)
+                          <div className="mt-0.5 font-mono text-[10px] text-[#64645e]">
+                            {locale === "sv" ? "Totalt:" : "Total:"}{" "}
+                            {formatCurrency(filteredSum, currency, locale)}
                           </div>
                         )}
                       </div>
                     </div>
 
+                    {/* Row 2: Clean Metadata Strip */}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          mg.isIncome
+                            ? "bg-[#e7f4eb] text-[#057b40]"
+                            : "bg-[#fdeee0] text-[#b85d10]"
+                        }`}
+                      >
+                        {mg.suggestedCategoryLabel}
+                      </span>
+
+                      {isRecurringGroup && (
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-[#e1edfe] px-2 py-0.5 text-[10px] font-bold text-[#2173be]">
+                          <Repeat className="h-2.5 w-2.5" />
+                          {locale === "sv"
+                            ? `${mg.distinctMonths.length} mån`
+                            : `${mg.distinctMonths.length} mos`}
+                        </span>
+                      )}
+
+                      {mg.matchedRulePattern && (
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-[#f6e6fc] px-2 py-0.5 text-[10px] font-bold text-[#7a2899]">
+                          <Zap className="h-2.5 w-2.5" />
+                          {mg.matchedRulePattern}
+                        </span>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedKeys((prev) => ({
+                            ...prev,
+                            [mg.merchantKey]: !prev[mg.merchantKey],
+                          }))
+                        }
+                        className="ml-auto inline-flex items-center gap-0.5 font-sans text-[11px] font-semibold text-[#2173be] hover:underline"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3 w-3" />
+                        ) : (
+                          <ChevronRight className="h-3 w-3" />
+                        )}
+                        <span>
+                          {txCount}{" "}
+                          {locale === "sv"
+                            ? txCount === 1
+                              ? "rad"
+                              : "rader"
+                            : txCount === 1
+                            ? "row"
+                            : "rows"}
+                        </span>
+                      </button>
+                    </div>
+
                     {/* Expandable individual transactions list */}
                     {isExpanded && (
-                      <div className="mt-2 rounded-xl bg-[#f8f8f7] p-2 space-y-1 border border-[#ecece9]">
+                      <div className="mt-2 rounded-xl bg-[#f8f8f7] p-2.5 space-y-1 border border-[#ecece9]">
                         {mg.filteredTxs.map((tx) => (
                           <div
                             key={tx.id}
                             className="flex items-center justify-between font-mono text-[11px] text-[#64645e]"
                           >
-                            <span>
+                            <span className="break-words">
                               {tx.date}
                               {tx.detailNote ? ` (${tx.detailNote})` : ""}
                             </span>
-                            <span className="font-bold text-[#282825]">
+                            <span className="font-bold text-[#282825] shrink-0 ml-2">
                               {formatCurrency(tx.amount, currency, locale)}
                             </span>
                           </div>
@@ -1514,8 +1506,8 @@ export function BankImportModal({
                       </div>
                     )}
 
-                    {/* Action + Category/Target Item Selector (Categorize ONCE for all rows in this group!) */}
-                    <div className="mt-2.5 grid grid-cols-2 gap-2">
+                    {/* Row 3: Action + Category/Target Item Selector */}
+                    <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                       <select
                         value={mg.actionType}
                         onChange={(e) =>
@@ -1524,12 +1516,12 @@ export function BankImportModal({
                               .value as MerchantGroupCandidate["actionType"],
                           })
                         }
-                        className="rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-1.5 text-[11px] font-semibold text-[#282825]"
+                        className="w-full rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 text-xs font-semibold text-[#282825]"
                       >
                         <option value="new_monthly">
                           {locale === "sv"
-                            ? "🔄 Ny återkommande månadspost"
-                            : "🔄 New recurring monthly item"}
+                            ? "🔄 Återkommande månadspost"
+                            : "🔄 Recurring monthly item"}
                         </option>
                         <option value="existing_item">
                           {locale === "sv"
@@ -1538,8 +1530,8 @@ export function BankImportModal({
                         </option>
                         <option value="new_once">
                           {locale === "sv"
-                            ? "1️⃣ Ny engångspost"
-                            : "1️⃣ New one-time item"}
+                            ? "1️⃣ Engångspost"
+                            : "1️⃣ One-time item"}
                         </option>
                         <option value="skip">
                           {locale === "sv" ? "⏭️ Hoppa över" : "⏭️ Skip"}
@@ -1555,7 +1547,7 @@ export function BankImportModal({
                               rememberRule: true,
                             })
                           }
-                          className="rounded-full border border-[#c5c5ba] bg-[#e7f4eb] px-3 py-1.5 text-[11px] font-semibold text-[#057b40]"
+                          className="w-full rounded-xl border border-[#c5c5ba] bg-[#e7f4eb] px-3 py-2 text-xs font-semibold text-[#057b40]"
                         >
                           {items.map((it) => (
                             <option key={it.id} value={it.id}>
@@ -1574,7 +1566,7 @@ export function BankImportModal({
                               targetGroupId: e.target.value,
                             })
                           }
-                          className="rounded-full border border-[#c5c5ba] bg-[#fdeee0] px-3 py-1.5 text-[11px] font-semibold text-[#b85d10]"
+                          className="w-full rounded-xl border border-[#c5c5ba] bg-[#fdeee0] px-3 py-2 text-xs font-semibold text-[#b85d10]"
                         >
                           {groups.map((g) => (
                             <option key={g.id} value={g.id}>
