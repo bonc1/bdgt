@@ -14,8 +14,11 @@ import {
   Cloud,
   Database,
   UserPlus,
+  Moon,
+  Sun,
+  Scale,
 } from "lucide-react";
-import { Household, HouseholdMember, Locale } from "@/lib/types";
+import { Household, HouseholdMember, Locale, ThemeMode } from "@/lib/types";
 import { translations } from "@/lib/i18n";
 import { createClient } from "@/lib/supabase/client";
 
@@ -25,10 +28,12 @@ interface HouseholdViewProps {
   userEmail: string | null;
   dbReady: boolean;
   locale: Locale;
+  theme: ThemeMode;
   currency: string;
   onChangeLocale: (loc: Locale) => void;
+  onChangeTheme: (th: ThemeMode) => void;
   onChangeCurrency: (cur: string) => void;
-  onUpdateHouseholdName: (name: string) => Promise<void>;
+  onUpdateHousehold: (patch: Partial<Household>) => Promise<void>;
   onJoinHouseholdByCode: (code: string) => Promise<void>;
   onSignOut: () => Promise<void>;
 }
@@ -41,10 +46,12 @@ export function HouseholdView({
   userEmail,
   dbReady,
   locale,
+  theme,
   currency,
   onChangeLocale,
+  onChangeTheme,
   onChangeCurrency,
-  onUpdateHouseholdName,
+  onUpdateHousehold,
   onJoinHouseholdByCode,
   onSignOut,
 }: HouseholdViewProps) {
@@ -62,6 +69,21 @@ export function HouseholdView({
   const [copiedCode, setCopiedCode] = useState(false);
   const [joinCodeInput, setJoinCodeInput] = useState("");
   const [householdNameInput, setHouseholdNameInput] = useState(household.name);
+  const [partnerAName, setPartnerAName] = useState(
+    household.partner_a_name || "Partner A"
+  );
+  const [partnerBName, setPartnerBName] = useState(
+    household.partner_b_name || "Partner B"
+  );
+  const [partnerAIncome, setPartnerAIncome] = useState(
+    String(household.partner_a_income ?? 36500)
+  );
+  const [partnerBIncome, setPartnerBIncome] = useState(
+    String(household.partner_b_income ?? 31000)
+  );
+  const [splitMode, setSplitMode] = useState<"equal" | "proportional">(
+    household.split_mode || "proportional"
+  );
   const [joinStatus, setJoinStatus] = useState<string | null>(null);
 
   const handleCopyInvite = () => {
@@ -182,6 +204,17 @@ export function HouseholdView({
       const msg = err instanceof Error ? err.message : "Error";
       setJoinStatus(msg);
     }
+  };
+
+  const handleSaveSplitSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await onUpdateHousehold({
+      partner_a_name: partnerAName.trim() || "Partner A",
+      partner_b_name: partnerBName.trim() || "Partner B",
+      split_mode: splitMode,
+      partner_a_income: parseFloat(partnerAIncome) || 0,
+      partner_b_income: parseFloat(partnerBIncome) || 0,
+    });
   };
 
   return (
@@ -330,7 +363,6 @@ export function HouseholdView({
           </div>
         )}
 
-        {/* Database Table Readiness Indicator */}
         <div className="flex items-center justify-between rounded-2xl bg-[#f8f8f7] px-3.5 py-2.5 text-xs border border-[#ecece9]">
           <div className="flex items-center gap-2 font-mono text-[#64645e]">
             <Database className="h-3.5 w-3.5 text-[#057b40]" />
@@ -352,6 +384,102 @@ export function HouseholdView({
         </div>
       </div>
 
+      {/* Partner Split Settings Card */}
+      <form
+        onSubmit={handleSaveSplitSettings}
+        className="rounded-3xl border border-[#c5c5ba] bg-white p-5 space-y-3.5 shadow-editorial"
+      >
+        <div className="flex items-center gap-2 font-serif text-xl text-[#282825]">
+          <Scale className="h-4 w-4 text-[#2173be]" />
+          <span>
+            {locale === "sv"
+              ? "Kostnadsdelning (50/50 eller Proportionerligt)"
+              : "Partner Cost Split (50/50 or Proportional)"}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-1.5 rounded-full bg-[#ecece9] p-1 border border-[#c5c5ba]">
+          <button
+            type="button"
+            onClick={() => setSplitMode("proportional")}
+            className={`rounded-full py-1.5 px-3 text-xs font-semibold transition ${
+              splitMode === "proportional"
+                ? "bg-[#0c0d0d] text-white"
+                : "text-[#64645e]"
+            }`}
+          >
+            {locale === "sv" ? "Efter inkomst (%)" : "By income (%)"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSplitMode("equal")}
+            className={`rounded-full py-1.5 px-3 text-xs font-semibold transition ${
+              splitMode === "equal"
+                ? "bg-[#0c0d0d] text-white"
+                : "text-[#64645e]"
+            }`}
+          >
+            {locale === "sv" ? "Lika (50 / 50)" : "Equal (50 / 50)"}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2.5">
+          <div>
+            <label className="block text-[11px] font-semibold text-[#64645e] mb-1">
+              {locale === "sv" ? "Namn 1" : "Partner 1"}
+            </label>
+            <input
+              type="text"
+              value={partnerAName}
+              onChange={(e) => setPartnerAName(e.target.value)}
+              className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-xs text-[#282825]"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-[#64645e] mb-1">
+              {locale === "sv" ? "Nettoinkomst 1" : "Net Income 1"} ({currency})
+            </label>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={partnerAIncome}
+              onChange={(e) => setPartnerAIncome(e.target.value)}
+              className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 font-mono text-xs font-bold text-[#282825]"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-[#64645e] mb-1">
+              {locale === "sv" ? "Namn 2" : "Partner 2"}
+            </label>
+            <input
+              type="text"
+              value={partnerBName}
+              onChange={(e) => setPartnerBName(e.target.value)}
+              className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-xs text-[#282825]"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] font-semibold text-[#64645e] mb-1">
+              {locale === "sv" ? "Nettoinkomst 2" : "Net Income 2"} ({currency})
+            </label>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={partnerBIncome}
+              onChange={(e) => setPartnerBIncome(e.target.value)}
+              className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 font-mono text-xs font-bold text-[#282825]"
+            />
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          className="w-full rounded-full bg-[#0c0d0d] py-2.5 text-xs font-semibold text-white hover:bg-[#282825]"
+        >
+          {locale === "sv" ? "Spara fördelning" : "Save split settings"}
+        </button>
+      </form>
+
       {/* Shared Household & Invite Code */}
       <div className="rounded-3xl border border-[#c5c5ba] bg-white p-5 space-y-4 shadow-editorial">
         <div className="flex items-center gap-2 font-serif text-xl text-[#282825]">
@@ -359,7 +487,6 @@ export function HouseholdView({
           <span>{household.name}</span>
         </div>
 
-        {/* Rename household */}
         <div className="flex gap-2">
           <input
             type="text"
@@ -369,14 +496,13 @@ export function HouseholdView({
           />
           <button
             type="button"
-            onClick={() => onUpdateHouseholdName(householdNameInput)}
+            onClick={() => onUpdateHousehold({ name: householdNameInput })}
             className="rounded-full bg-[#0c0d0d] px-4 py-2 text-xs font-semibold text-white hover:bg-[#282825]"
           >
             {t.actions.save}
           </button>
         </div>
 
-        {/* Invite code box */}
         <div className="flex items-center justify-between rounded-2xl bg-[#e7f4eb] p-3.5 border border-[#b5e3c4]">
           <div>
             <div className="text-[11px] font-semibold text-[#057b40]">
@@ -405,7 +531,6 @@ export function HouseholdView({
           </button>
         </div>
 
-        {/* Join another household */}
         <form onSubmit={handleJoinSubmit} className="space-y-2 pt-1">
           <label className="block text-xs font-semibold text-[#64645e]">
             {t.household.joinHousehold}
@@ -430,7 +555,6 @@ export function HouseholdView({
           )}
         </form>
 
-        {/* Members list */}
         {members.length > 0 && (
           <div className="pt-2 border-t border-[#ecece9] space-y-1.5">
             <div className="text-xs font-semibold text-[#64645e]">
@@ -453,9 +577,45 @@ export function HouseholdView({
         )}
       </div>
 
-      {/* Language & Currency Preferences */}
+      {/* Theme, Language & Currency Preferences */}
       <div className="rounded-3xl border border-[#c5c5ba] bg-white p-5 space-y-4 shadow-editorial">
+        {/* Theme toggle */}
         <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[#282825]">
+            {theme === "dark" ? (
+              <Moon className="h-4 w-4 text-[#c455eb]" />
+            ) : (
+              <Sun className="h-4 w-4 text-[#f09236]" />
+            )}
+            <span>{locale === "sv" ? "Utseende (Ellipsus)" : "Appearance"}</span>
+          </div>
+          <div className="inline-flex rounded-full bg-[#ecece9] p-1 border border-[#c5c5ba]">
+            <button
+              type="button"
+              onClick={() => onChangeTheme("light")}
+              className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                theme === "light"
+                  ? "bg-[#0c0d0d] text-white"
+                  : "text-[#64645e]"
+              }`}
+            >
+              {locale === "sv" ? "Papper" : "Warm Paper"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeTheme("dark")}
+              className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                theme === "dark"
+                  ? "bg-[#0c0d0d] text-white"
+                  : "text-[#64645e]"
+              }`}
+            >
+              {locale === "sv" ? "Mörkt bläck" : "Deep Ink"}
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between pt-3 border-t border-[#ecece9]">
           <div className="flex items-center gap-2 text-xs font-semibold text-[#282825]">
             <Globe className="h-4 w-4 text-[#057b40]" />
             <span>{t.household.language}</span>

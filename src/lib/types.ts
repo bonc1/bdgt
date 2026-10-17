@@ -1,5 +1,7 @@
 export type Locale = "sv" | "en";
 
+export type ThemeMode = "light" | "dark";
+
 export type BudgetGroupKind = "income" | "expense" | "savings";
 
 export type EntryMode = "single_bill" | "multi_entry";
@@ -11,6 +13,10 @@ export type RecordStatus = "pending" | "confirmed" | "skipped";
 
 export type ViewMode = "cashflow" | "accrual";
 
+export type CostSplit = "shared" | "personal_a" | "personal_b";
+
+export type BudgetFilter = "all" | "unconfirmed" | "due_now";
+
 export interface Household {
   id: string;
   name: string;
@@ -18,6 +24,11 @@ export interface Household {
   default_locale: Locale;
   invite_code: string;
   created_by?: string | null;
+  partner_a_name?: string;
+  partner_b_name?: string;
+  split_mode?: "equal" | "proportional";
+  partner_a_income?: number;
+  partner_b_income?: number;
 }
 
 export interface HouseholdMember {
@@ -50,6 +61,10 @@ export interface BudgetItem {
   anchor_month: number; // 1..12
   coverage_months: number; // 1..12
   is_variable_estimate: boolean;
+  seasonal_amounts?: Record<string, number> | null; // keys "1".."12"
+  cost_split?: CostSplit;
+  target_amount?: number | null;
+  current_saved?: number | null;
   is_active: boolean;
   sort_order: number;
 }
@@ -87,12 +102,21 @@ export interface ComputedItemMonth {
   accrualExpected: number;
   displayedExpected: number;
   displayedActual: number | null;
-  effectiveAmount: number; // actual if confirmed/logged, else displayedExpected
-  variance: number | null; // actual - expected
+  effectiveAmount: number;
+  variance: number | null;
   coverageLabel: string;
 }
 
 export interface FutureUpdateDecision {
   updateExpectedAmount?: number;
   makeRecurringInterval?: RecurrenceInterval;
+}
+
+export interface MonthTrendPoint {
+  yearMonth: string;
+  shortLabel: string;
+  income: number;
+  expenses: number;
+  savings: number;
+  expectedExpenses: number;
 }

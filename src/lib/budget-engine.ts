@@ -1,4 +1,4 @@
-import { SHORT_MONTH_NAMES } from "./i18n";
+import { formatCurrency, SHORT_MONTH_NAMES } from "./i18n";
 import {
   BudgetGroup,
   BudgetItem,
@@ -6,6 +6,7 @@ import {
   Household,
   Locale,
   MonthlyRecord,
+  MonthTrendPoint,
   ViewMode,
 } from "./types";
 
@@ -40,6 +41,20 @@ export function getNextPaymentMonth(
   return item.anchor_month || currentMonth;
 }
 
+export function getItemExpectedForMonth(
+  item: BudgetItem,
+  monthNumber: number
+): number {
+  if (
+    item.is_variable_estimate &&
+    item.seasonal_amounts &&
+    item.seasonal_amounts[String(monthNumber)] !== undefined
+  ) {
+    return Number(item.seasonal_amounts[String(monthNumber)]);
+  }
+  return Number(item.expected_amount);
+}
+
 export function getCoverageLabel(
   item: BudgetItem,
   monthNumber: number,
@@ -59,6 +74,14 @@ export function getCoverageLabel(
 
   if (interval === 1 && coverage === 1) {
     if (item.is_variable_estimate) {
+      const hasCustomSeason =
+        item.seasonal_amounts &&
+        Object.keys(item.seasonal_amounts).length > 0;
+      if (hasCustomSeason) {
+        return locale === "sv"
+          ? `Säsongskurva (${shortMonths[monthNumber - 1]})`
+          : `Seasonal curve (${shortMonths[monthNumber - 1]})`;
+      }
       return locale === "sv"
         ? "Månadsvis • Rörlig prognos"
         : "Monthly • Variable estimate";
@@ -118,7 +141,6 @@ export function computeMonthlyBudget(
   return items
     .filter((item) => {
       if (!item.is_active) return false;
-      // One-time items only appear in their designated year_month
       if (
         item.recurrence_interval_months === 0 &&
         item.one_time_year_month &&
@@ -135,12 +157,13 @@ export function computeMonthlyBudget(
         name: "Övrigt",
         kind: "expense",
         icon: "Folder",
-        color: "slate",
+        color: "blue",
         sort_order: 99,
       };
       const record = recordMap.get(item.id) || null;
       const isPaymentMonth = isItemDueInMonth(item, monthNumber, yearMonth);
-      const baseExpected = record?.expected_snapshot ?? item.expected_amount;
+      const seasonalOrBase = getItemExpectedForMonth(item, monthNumber);
+      const baseExpected = record?.expected_snapshot ?? seasonalOrBase;
 
       const intervalDivisor =
         item.recurrence_interval_months > 0
@@ -203,6 +226,130 @@ export function computeMonthlyBudget(
     });
 }
 
+export function computeMultiMonthTrends(
+  groups: BudgetGroup[],
+  items: BudgetItem[],
+  records: MonthlyRecord[],
+  endYearMonth: string,
+  monthsCount: number,
+  viewMode: ViewMode,
+  locale: Locale,
+  filterItemId?: string
+): MonthTrendPoint[] {
+  const points: MonthTrendPoint[] = [];
+  for (let i = monthsCount - 1; i >= 0; i--) {
+    const ym = shiftYearMonth(endYearMonth, -i);
+    const [, mStr] = ym.split("-");
+    const mNum = parseInt(mStr || "1", 10);
+    const shortLabel = SHORT_MONTH_NAMES[locale][mNum - 1];
+    const computed = computeMonthlyBudget(
+      groups,
+      items,
+      records,
+      ym,
+      viewMode,
+      locale
+    );
+
+    let income = 0;
+    let expenses = 0;
+    let savings = 0;
+    let expectedExpenses = 0;
+
+    for (const c of computed) {
+      if (filterItemId && c.item.id !== filterItemId) continue;
+      if (filterItemId) {
+        expenses += c.effectiveAmount;
+        expectedExpenses += c.displayedExpected;
+      } else if (c.group.kind === "income") {
+        income += c.effectiveAmount;
+      } else if (c.group.kind === "savings") {
+        savings += c.effectiveAmount;
+      } else {
+        expenses += c.effectiveAmount;
+        expectedExpenses += c.displayedExpected;
+      }
+    }
+
+    points.push({
+      yearMonth: ym,
+      shortLabel,
+      income: Math.round(income),
+      expenses: Math.round(expenses),
+      savings: Math.round(savings),
+      expectedExpenses: Math.round(expectedExpenses),
+    });
+  }
+  return points;
+}
+
+export function generateMonthlyCsv(
+  computedItems: ComputedItemMonth[],
+  yearMonth: string,
+  currency: string
+): string {
+  const header = [
+    "YearMonth",
+    "Group",
+    "CategoryKind",
+    "ItemName",
+    "ExpectedAmount",
+    "ActualAmount",
+    "EffectiveAmount",
+    "Variance",
+    "Status",
+    "Split",
+    "Currency",
+  ];
+  const rows = computedItems.map((c) => [
+    yearMonth,
+    `"${c.group.name.replace(/"/g, '""')}"`,
+    c.group.kind,
+    `"${c.item.name.replace(/"/g, '""')}"`,
+    Math.round(c.displayedExpected),
+    c.displayedActual !== null ? Math.round(c.displayedActual) : "",
+    Math.round(c.effectiveAmount),
+    c.variance !== null ? Math.round(c.variance) : 0,
+    c.record?.status || "pending",
+    c.item.cost_split || "shared",
+    currency,
+  ]);
+  return "\uFEFF" + [header.join(";"), ...rows.map((r) => r.join(";"))].join("\n");
+}
+
+export function generateMonthlyTextSummary(
+  computedItems: ComputedItemMonth[],
+  yearMonth: string,
+  currency: string,
+  locale: Locale
+): string {
+  let inc = 0;
+  let exp = 0;
+  let sav = 0;
+  for (const c of computedItems) {
+    if (c.group.kind === "income") inc += c.effectiveAmount;
+    else if (c.group.kind === "savings") sav += c.effectiveAmount;
+    else exp += c.effectiveAmount;
+  }
+  const left = inc - exp - sav;
+  if (locale === "sv") {
+    return [
+      `📊 bdgt sammanfattning (${yearMonth})`,
+      `• Inkomst: ${formatCurrency(inc, currency, locale)}`,
+      `• Utgifter: ${formatCurrency(exp, currency, locale)}`,
+      `• Sparande: ${formatCurrency(sav, currency, locale)}`,
+      `• Kvar i månaden: ${formatCurrency(left, currency, locale)}`,
+    ].join("\n");
+  }
+  return [
+    `📊 bdgt Summary (${yearMonth})`,
+    `• Income: ${formatCurrency(inc, currency, locale)}`,
+    `• Expenses: ${formatCurrency(exp, currency, locale)}`,
+    `• Savings: ${formatCurrency(sav, currency, locale)}`,
+    `• Left this month: ${formatCurrency(left, currency, locale)}`,
+  ].join("\n");
+}
+
 export function getCurrentYearMonth(): string {
   const now = new Date();
   const y = now.getFullYear();
@@ -236,6 +383,11 @@ export function createStarterDataset(
     currency: "SEK",
     default_locale: locale,
     invite_code: "BDGT2026",
+    partner_a_name: "Partner A",
+    partner_b_name: "Partner B",
+    split_mode: "proportional",
+    partner_a_income: 36500,
+    partner_b_income: 31000,
   };
 
   const groups: BudgetGroup[] = [
@@ -245,7 +397,7 @@ export function createStarterDataset(
       name: locale === "sv" ? "Inkomster" : "Income",
       kind: "income",
       icon: "Wallet",
-      color: "emerald",
+      color: "green",
       sort_order: 1,
     },
     {
@@ -263,7 +415,7 @@ export function createStarterDataset(
       name: locale === "sv" ? "Mat & Vardag" : "Groceries & Daily",
       kind: "expense",
       icon: "ShoppingBag",
-      color: "amber",
+      color: "orange",
       sort_order: 3,
     },
     {
@@ -273,7 +425,7 @@ export function createStarterDataset(
         locale === "sv" ? "Transport & Försäkring" : "Transport & Insurance",
       kind: "expense",
       icon: "Car",
-      color: "violet",
+      color: "coral",
       sort_order: 4,
     },
     {
@@ -282,7 +434,7 @@ export function createStarterDataset(
       name: locale === "sv" ? "Sparande & Buffert" : "Savings & Buffer",
       kind: "savings",
       icon: "PiggyBank",
-      color: "teal",
+      color: "purple",
       sort_order: 5,
     },
   ];
@@ -299,6 +451,7 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: false,
+      cost_split: "shared",
       is_active: true,
       sort_order: 1,
     },
@@ -313,6 +466,7 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: false,
+      cost_split: "shared",
       is_active: true,
       sort_order: 1,
     },
@@ -327,6 +481,21 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: true,
+      seasonal_amounts: {
+        "1": 3100,
+        "2": 2900,
+        "3": 2200,
+        "4": 1600,
+        "5": 1200,
+        "6": 950,
+        "7": 900,
+        "8": 950,
+        "9": 1300,
+        "10": 2000,
+        "11": 2500,
+        "12": 3000,
+      },
+      cost_split: "shared",
       is_active: true,
       sort_order: 2,
     },
@@ -344,6 +513,7 @@ export function createStarterDataset(
       anchor_month: currentM,
       coverage_months: 3,
       is_variable_estimate: true,
+      cost_split: "shared",
       is_active: true,
       sort_order: 3,
     },
@@ -358,6 +528,7 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: false,
+      cost_split: "shared",
       is_active: true,
       sort_order: 4,
     },
@@ -372,6 +543,7 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: true,
+      cost_split: "shared",
       is_active: true,
       sort_order: 1,
     },
@@ -386,6 +558,7 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: true,
+      cost_split: "personal_a",
       is_active: true,
       sort_order: 2,
     },
@@ -403,6 +576,7 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: true,
+      cost_split: "shared",
       is_active: true,
       sort_order: 1,
     },
@@ -417,6 +591,7 @@ export function createStarterDataset(
       anchor_month: (currentM % 12) + 1,
       coverage_months: 12,
       is_variable_estimate: false,
+      cost_split: "shared",
       is_active: true,
       sort_order: 2,
     },
@@ -426,7 +601,7 @@ export function createStarterDataset(
       group_id: "grp-savings",
       name:
         locale === "sv"
-          ? "Månadssparande (ISK / Buffert)"
+          ? "Månadssparande (Buffert & ISK)"
           : "Monthly Investment & Buffer",
       entry_mode: "single_bill",
       expected_amount: 4500,
@@ -434,6 +609,9 @@ export function createStarterDataset(
       anchor_month: 1,
       coverage_months: 1,
       is_variable_estimate: false,
+      cost_split: "shared",
+      target_amount: 60000,
+      current_saved: 34500,
       is_active: true,
       sort_order: 1,
     },

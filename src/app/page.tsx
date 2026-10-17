@@ -17,8 +17,15 @@ import {
   ArrowDownRight,
   PiggyBank,
   Sparkles,
+  Moon,
+  Sun,
+  Settings2,
+  FileSpreadsheet,
+  CheckCheck,
+  Target,
 } from "lucide-react";
 import {
+  BudgetFilter,
   BudgetGroup,
   BudgetGroupKind,
   BudgetItem,
@@ -28,6 +35,7 @@ import {
   HouseholdMember,
   Locale,
   MonthlyRecord,
+  ThemeMode,
   ViewMode,
 } from "@/lib/types";
 import {
@@ -45,6 +53,11 @@ import { FollowUpSheet } from "@/components/FollowUpSheet";
 import { GroupFormModal, ItemFormModal } from "@/components/ItemFormModal";
 import { InsightsView } from "@/components/InsightsView";
 import { HouseholdView } from "@/components/HouseholdView";
+import {
+  BankImportModal,
+  ImportedRowAction,
+} from "@/components/BankImportModal";
+import { MonthCloseModal } from "@/components/MonthCloseModal";
 import { createClient } from "@/lib/supabase/client";
 
 const STORAGE_KEY = "bdgt_local_state_v1";
@@ -69,49 +82,56 @@ function BrushUnderline({ className = "" }: { className?: string }) {
 }
 
 function getGroupHighlighter(group: BudgetGroup, idx: number) {
-  if (group.kind === "income") {
-    return {
+  const colorMap: Record<
+    string,
+    { headerBg: string; badgeBg: string; accentText: string; dot: string }
+  > = {
+    green: {
       headerBg: "bg-[#e7f4eb]",
       badgeBg: "bg-[#b5e3c4]",
       accentText: "text-[#057b40]",
       dot: "bg-[#529a6a]",
-    };
-  }
-  if (group.kind === "savings") {
-    return {
+    },
+    purple: {
       headerBg: "bg-[#f6e6fc]",
       badgeBg: "bg-[#edc6fb]",
       accentText: "text-[#7a2899]",
       dot: "bg-[#c455eb]",
-    };
-  }
-  const palettes = [
-    {
+    },
+    blue: {
       headerBg: "bg-[#e1edfe]",
       badgeBg: "bg-[#b8d5ff]",
       accentText: "text-[#2173be]",
       dot: "bg-[#2173be]",
     },
-    {
+    orange: {
       headerBg: "bg-[#fdeee0]",
       badgeBg: "bg-[#faca9e]",
       accentText: "text-[#b85d10]",
       dot: "bg-[#f09236]",
     },
-    {
+    coral: {
       headerBg: "bg-[#fdeeed]",
       badgeBg: "bg-[#fbc8c5]",
       accentText: "text-[#b81a14]",
       dot: "bg-[#eb5b55]",
     },
-  ];
-  return palettes[idx % palettes.length];
+  };
+
+  if (group.color && colorMap[group.color]) {
+    return colorMap[group.color];
+  }
+  if (group.kind === "income") return colorMap.green;
+  if (group.kind === "savings") return colorMap.purple;
+  const fallbackKeys = ["blue", "orange", "coral"];
+  return colorMap[fallbackKeys[idx % fallbackKeys.length]];
 }
 
 export default function BudgetAppPage() {
   const supabase = useMemo(() => createClient(), []);
 
   const [locale, setLocale] = useState<Locale>("sv");
+  const [theme, setTheme] = useState<ThemeMode>("light");
   const [activeTab, setActiveTab] = useState<
     "budget" | "insights" | "household"
   >("budget");
@@ -119,6 +139,7 @@ export default function BudgetAppPage() {
     getCurrentYearMonth()
   );
   const [viewMode, setViewMode] = useState<ViewMode>("cashflow");
+  const [budgetFilter, setBudgetFilter] = useState<BudgetFilter>("all");
 
   // Core state
   const [household, setHousehold] = useState<Household>(() =>
@@ -150,8 +171,18 @@ export default function BudgetAppPage() {
     string | undefined
   >(undefined);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<BudgetGroup | null>(null);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [monthCloseModalOpen, setMonthCloseModalOpen] = useState(false);
 
   const t = translations[locale];
+
+  // Apply theme attribute to <html>
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+  }, [theme]);
 
   // 1. Load local state on mount
   useEffect(() => {
@@ -160,6 +191,7 @@ export default function BudgetAppPage() {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed.locale) setLocale(parsed.locale);
+        if (parsed.theme) setTheme(parsed.theme);
         if (parsed.household) setHousehold(parsed.household);
         if (parsed.groups?.length) setGroups(parsed.groups);
         if (parsed.items?.length) setItems(parsed.items);
@@ -172,7 +204,6 @@ export default function BudgetAppPage() {
     }
   }, []);
 
-  // Save to localStorage whenever state updates in local mode
   useEffect(() => {
     if (!hydrated || userId) return;
     try {
@@ -180,6 +211,7 @@ export default function BudgetAppPage() {
         STORAGE_KEY,
         JSON.stringify({
           locale,
+          theme,
           household,
           groups,
           items,
@@ -189,7 +221,7 @@ export default function BudgetAppPage() {
     } catch {
       // Ignore quota errors
     }
-  }, [hydrated, userId, locale, household, groups, items, records]);
+  }, [hydrated, userId, locale, theme, household, groups, items, records]);
 
   // 2. Load from Supabase when authenticated
   const loadCloudData = useCallback(
@@ -261,6 +293,10 @@ export default function BudgetAppPage() {
             anchor_month: it.anchor_month,
             coverage_months: it.coverage_months,
             is_variable_estimate: it.is_variable_estimate,
+            seasonal_amounts: it.seasonal_amounts || null,
+            cost_split: it.cost_split || "shared",
+            target_amount: it.target_amount || null,
+            current_saved: it.current_saved || 0,
             is_active: true,
             sort_order: it.sort_order,
           }));
@@ -383,6 +419,19 @@ export default function BudgetAppPage() {
     [groups, items, records, yearMonth, viewMode, locale]
   );
 
+  // Filtered computed items for the Budget tab
+  const filteredComputedItems = useMemo(() => {
+    if (budgetFilter === "unconfirmed") {
+      return computedItems.filter(
+        (c) => c.isPaymentMonth && c.record?.status !== "confirmed"
+      );
+    }
+    if (budgetFilter === "due_now") {
+      return computedItems.filter((c) => c.isPaymentMonth);
+    }
+    return computedItems;
+  }, [computedItems, budgetFilter]);
+
   const selectedComputed = useMemo(
     () => computedItems.find((c) => c.item.id === selectedItemId) || null,
     [computedItems, selectedItemId]
@@ -445,7 +494,6 @@ export default function BudgetAppPage() {
     const targetItem = items.find((i) => i.id === itemId);
     if (!targetItem) return;
 
-    // If user chose to update future expected amount or convert one-time to recurring
     if (futureDecision) {
       const itemUpdates: Partial<BudgetItem> = {};
       if (futureDecision.updateExpectedAmount !== undefined) {
@@ -537,6 +585,104 @@ export default function BudgetAppPage() {
       ),
       updatedRecord,
     ]);
+  };
+
+  // Inline 1-Tap Quick-Confirm toggle directly from the dashboard list!
+  const handleQuickToggleConfirm = async (
+    e: React.MouseEvent,
+    c: ComputedItemMonth
+  ) => {
+    e.stopPropagation();
+    const isConfirmed = c.record?.status === "confirmed";
+    if (isConfirmed) {
+      await handleResetPending(c.item.id);
+    } else {
+      const txSum = (c.record?.transactions || []).reduce(
+        (s, tx) => s + Number(tx.amount),
+        0
+      );
+      const amtToConfirm =
+        c.item.entry_mode === "multi_entry" && txSum > 0
+          ? txSum
+          : c.displayedExpected;
+      await handleConfirmActual(c.item.id, amtToConfirm, c.record?.notes || "");
+    }
+  };
+
+  const handleBulkConfirmItems = async (itemIds: string[]) => {
+    for (const id of itemIds) {
+      const comp = computedItems.find((c) => c.item.id === id);
+      if (comp) {
+        await handleConfirmActual(id, comp.displayedExpected, "");
+      }
+    }
+  };
+
+  const handleRolloverToSavings = async (
+    savingsItemId: string,
+    amount: number
+  ) => {
+    const target = items.find((i) => i.id === savingsItemId);
+    if (!target) return;
+    const nextSaved = Number(target.current_saved || 0) + amount;
+    if (userId && dbReady) {
+      await supabase
+        .from("budget_items")
+        .update({ current_saved: nextSaved })
+        .eq("id", savingsItemId);
+    }
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === savingsItemId ? { ...i, current_saved: nextSaved } : i
+      )
+    );
+  };
+
+  const handleImportRows = async (rows: ImportedRowAction[]) => {
+    for (const row of rows) {
+      if (row.actionType === "skip") continue;
+      if (row.actionType === "existing_item" && row.targetItemId) {
+        const target = items.find((i) => i.id === row.targetItemId);
+        if (!target) continue;
+        if (target.entry_mode === "multi_entry") {
+          await handleAddTransaction(
+            target.id,
+            row.amount,
+            `${row.description} (${row.date})`
+          );
+        } else {
+          await handleConfirmActual(
+            target.id,
+            row.amount,
+            `Import: ${row.description}`
+          );
+        }
+      } else if (
+        (row.actionType === "new_once" || row.actionType === "new_monthly") &&
+        row.targetGroupId
+      ) {
+        const [, mStr] = yearMonth.split("-");
+        const activeM = parseInt(mStr || "1", 10);
+        await handleSaveItem(
+          {
+            name: row.description,
+            group_id: row.targetGroupId,
+            expected_amount: row.amount,
+            entry_mode: "single_bill",
+            recurrence_interval_months:
+              row.actionType === "new_once" ? 0 : 1,
+            one_time_year_month:
+              row.actionType === "new_once" ? yearMonth : null,
+            anchor_month: activeM,
+            coverage_months: 1,
+            is_variable_estimate: false,
+            cost_split: "shared",
+          },
+          undefined,
+          row.amount
+        );
+      }
+    }
   };
 
   const handleResetPending = async (itemId: string) => {
@@ -687,7 +833,7 @@ export default function BudgetAppPage() {
         prev.map((it) => (it.id === existingId ? { ...it, ...data } : it))
       );
     } else {
-      let createdItemId = `itm-${Date.now()}`;
+      let createdItemId = `itm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       if (userId && dbReady) {
         const { data: inserted } = await supabase
           .from("budget_items")
@@ -723,7 +869,6 @@ export default function BudgetAppPage() {
         setItems((prev) => [...prev, newItem]);
       }
 
-      // If created via "Unexpected Cost" flow, auto-confirm the actual amount for the current month!
       if (autoConfirmActual !== undefined) {
         if (userId && dbReady) {
           const { data: recData } = await supabase
@@ -758,7 +903,7 @@ export default function BudgetAppPage() {
         }
 
         const autoRec: MonthlyRecord = {
-          id: `rec-${Date.now()}`,
+          id: `rec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           household_id: household.id,
           item_id: createdItemId,
           year_month: yearMonth,
@@ -784,8 +929,22 @@ export default function BudgetAppPage() {
   const handleSaveGroup = async (
     name: string,
     kind: BudgetGroupKind,
-    color: string
+    color: string,
+    existingId?: string
   ) => {
+    if (existingId) {
+      if (userId && dbReady) {
+        await supabase
+          .from("budget_groups")
+          .update({ name, kind, color })
+          .eq("id", existingId);
+      }
+      setGroups((prev) =>
+        prev.map((g) => (g.id === existingId ? { ...g, name, kind, color } : g))
+      );
+      return;
+    }
+
     if (userId && dbReady) {
       const { data: inserted } = await supabase
         .from("budget_groups")
@@ -817,15 +976,43 @@ export default function BudgetAppPage() {
     setGroups((prev) => [...prev, newGrp]);
   };
 
-  const handleUpdateHouseholdName = async (name: string) => {
-    if (!name.trim()) return;
+  const handleDeleteGroup = async (groupId: string) => {
     if (userId && dbReady) {
-      await supabase
-        .from("households")
-        .update({ name: name.trim() })
-        .eq("id", household.id);
+      await supabase.from("budget_groups").delete().eq("id", groupId);
     }
-    setHousehold((prev) => ({ ...prev, name: name.trim() }));
+    setGroups((prev) => prev.filter((g) => g.id !== groupId));
+    setItems((prev) => prev.filter((i) => i.group_id !== groupId));
+  };
+
+  const handleMoveGroup = async (
+    groupId: string,
+    direction: "up" | "down"
+  ) => {
+    const idx = groups.findIndex((g) => g.id === groupId);
+    if (idx === -1) return;
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= groups.length) return;
+    const next = [...groups];
+    const [removed] = next.splice(idx, 1);
+    next.splice(swapIdx, 0, removed);
+    const reordered = next.map((g, i) => ({ ...g, sort_order: i + 1 }));
+    setGroups(reordered);
+
+    if (userId && dbReady) {
+      for (const g of reordered) {
+        await supabase
+          .from("budget_groups")
+          .update({ sort_order: g.sort_order })
+          .eq("id", g.id);
+      }
+    }
+  };
+
+  const handleUpdateHousehold = async (patch: Partial<Household>) => {
+    if (userId && dbReady) {
+      await supabase.from("households").update(patch).eq("id", household.id);
+    }
+    setHousehold((prev) => ({ ...prev, ...patch }));
   };
 
   const handleJoinHouseholdByCode = async (code: string) => {
@@ -844,13 +1031,7 @@ export default function BudgetAppPage() {
   };
 
   const handleChangeCurrency = async (cur: string) => {
-    if (userId && dbReady) {
-      await supabase
-        .from("households")
-        .update({ currency: cur })
-        .eq("id", household.id);
-    }
-    setHousehold((prev) => ({ ...prev, currency: cur }));
+    await handleUpdateHousehold({ currency: cur });
   };
 
   return (
@@ -858,7 +1039,7 @@ export default function BudgetAppPage() {
       {/* Top Editorial Masthead */}
       <header className="flex items-center justify-between pb-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#282825] bg-[#ffffff] font-serif text-2xl italic text-[#282825] shadow-xs">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#282825] bg-white font-serif text-2xl italic text-[#282825] shadow-xs">
             b.
           </div>
           <div>
@@ -881,8 +1062,25 @@ export default function BudgetAppPage() {
           </div>
         </div>
 
-        {/* Instant SV / EN Pill + Quick Add */}
+        {/* Theme + Language + Quick Actions */}
         <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setTheme((th) => (th === "light" ? "dark" : "light"))}
+            className="rounded-full border border-[#c5c5ba] bg-white p-1.5 text-[#282825] hover:border-[#282825] transition"
+            title={
+              theme === "light"
+                ? "Switch to Ellipsus Deep Ink Dark Mode"
+                : "Switch to Warm Paper Mode"
+            }
+          >
+            {theme === "light" ? (
+              <Moon className="h-3.5 w-3.5" />
+            ) : (
+              <Sun className="h-3.5 w-3.5 text-[#f09236]" />
+            )}
+          </button>
+
           <button
             type="button"
             onClick={() => setLocale((l) => (l === "sv" ? "en" : "sv"))}
@@ -890,6 +1088,7 @@ export default function BudgetAppPage() {
           >
             {locale === "sv" ? "SV" : "EN"}
           </button>
+
           <button
             type="button"
             onClick={() => {
@@ -900,11 +1099,12 @@ export default function BudgetAppPage() {
               );
               setItemModalOpen(true);
             }}
-            className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#fdeee0] px-3 py-1.5 text-xs font-semibold text-[#282825] hover:bg-[#faca9e] transition"
+            className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#fdeee0] px-2.5 py-1.5 text-xs font-semibold text-[#282825] hover:bg-[#faca9e] transition"
           >
             <Sparkles className="h-3.5 w-3.5 text-[#b85d10]" />
-            <span>{t.actions.addUnexpected}</span>
+            <span className="hidden sm:inline">{t.actions.addUnexpected}</span>
           </button>
+
           <button
             type="button"
             onClick={() => {
@@ -1010,10 +1210,15 @@ export default function BudgetAppPage() {
                 </div>
               </div>
 
-              {/* Confirmed Bills Highlighter Box */}
-              <div className="rounded-2xl border border-[#282825]/20 bg-[#e7f4eb] px-3.5 py-2.5 text-right">
-                <div className="text-[11px] font-semibold text-[#057b40]">
-                  {t.summary.confirmedProgress}
+              {/* Confirmed Bills Highlighter Box (Tappable to open Month Close Wizard!) */}
+              <button
+                type="button"
+                onClick={() => setMonthCloseModalOpen(true)}
+                className="rounded-2xl border border-[#282825]/25 bg-[#e7f4eb] px-3.5 py-2.5 text-right hover:border-[#282825] transition"
+              >
+                <div className="text-[11px] font-semibold text-[#057b40] flex items-center justify-end gap-1">
+                  <CheckCheck className="h-3.5 w-3.5" />
+                  <span>{t.summary.confirmedProgress}</span>
                 </div>
                 <div className="mt-0.5 font-serif text-xl text-[#282825]">
                   {summary.confirmedCount} {t.summary.of}{" "}
@@ -1034,7 +1239,7 @@ export default function BudgetAppPage() {
                     }}
                   />
                 </div>
-              </div>
+              </button>
             </div>
 
             {/* 3 Highlighter Summary Pillars: Income, Expenses, Savings */}
@@ -1083,12 +1288,69 @@ export default function BudgetAppPage() {
             </div>
           </div>
 
+          {/* Smart Filter Pills + Bank Import & Month Close Triggers */}
+          <div className="flex items-center justify-between gap-2 overflow-x-auto no-scrollbar py-0.5">
+            <div className="inline-flex items-center gap-1">
+              {(
+                [
+                  {
+                    id: "all" as BudgetFilter,
+                    labelSv: "Alla",
+                    labelEn: "All",
+                  },
+                  {
+                    id: "unconfirmed" as BudgetFilter,
+                    labelSv: "Att följa upp",
+                    labelEn: "Unconfirmed",
+                  },
+                  {
+                    id: "due_now" as BudgetFilter,
+                    labelSv: "Denna månad",
+                    labelEn: "Due now",
+                  },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setBudgetFilter(f.id)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition border ${
+                    budgetFilter === f.id
+                      ? "border-[#282825] bg-[#0c0d0d] text-white"
+                      : "border-[#c5c5ba] bg-white text-[#64645e]"
+                  }`}
+                >
+                  {locale === "sv" ? f.labelSv : f.labelEn}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setImportModalOpen(true)}
+                className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#e1edfe] px-3 py-1.5 text-xs font-semibold text-[#2173be] hover:bg-[#b8d5ff]"
+                title={
+                  locale === "sv"
+                    ? "Importera Excel / CSV från bank"
+                    : "Import bank Excel / CSV"
+                }
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" />
+                <span>{locale === "sv" ? "Bankimport" : "Import"}</span>
+              </button>
+            </div>
+          </div>
+
           {/* Groups & Budget Items List */}
           <div className="space-y-4">
             {groups.map((group, idx) => {
-              const groupItems = computedItems.filter(
+              const groupItems = filteredComputedItems.filter(
                 (c) => c.group.id === group.id
               );
+              if (budgetFilter !== "all" && groupItems.length === 0) {
+                return null;
+              }
               const groupExpected = groupItems.reduce(
                 (s, c) => s + c.displayedExpected,
                 0
@@ -1115,6 +1377,19 @@ export default function BudgetAppPage() {
                       <h2 className="font-serif text-lg tracking-wide text-[#282825]">
                         {group.name}
                       </h2>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingGroup(group);
+                          setGroupModalOpen(true);
+                        }}
+                        className="rounded-full p-1 text-[#64645e] hover:text-[#282825]"
+                        title={
+                          locale === "sv" ? "Redigera grupp" : "Edit group"
+                        }
+                      >
+                        <Settings2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
 
                     <div className="flex items-center gap-2.5">
@@ -1169,36 +1444,85 @@ export default function BudgetAppPage() {
                       const hasPartialTx =
                         item.entry_mode === "multi_entry" &&
                         (record?.transactions?.length || 0) > 0;
+                      const hasGoal =
+                        item.target_amount && item.target_amount > 0;
+                      const goalPct = hasGoal
+                        ? Math.min(
+                            100,
+                            Math.round(
+                              ((Number(item.current_saved || 0) +
+                                (isConfirmed ? c.effectiveAmount : 0)) /
+                                Number(item.target_amount)) *
+                                100
+                            )
+                          )
+                        : 0;
 
                       return (
-                        <button
+                        <div
                           key={item.id}
-                          type="button"
                           onClick={() => setSelectedItemId(item.id)}
-                          className={`flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-[#f8f8f7] active:bg-[#ecece9] ${
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              setSelectedItemId(item.id);
+                            }
+                          }}
+                          className={`flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-[#f8f8f7] active:bg-[#ecece9] ${
                             !isPaymentMonth && viewMode === "cashflow"
                               ? "opacity-55"
                               : ""
                           }`}
                         >
                           <div className="flex items-start gap-3 min-w-0">
-                            <div className="mt-0.5 shrink-0">
+                            {/* Inline 1-Tap Quick-Confirm Button */}
+                            <button
+                              type="button"
+                              onClick={(e) => handleQuickToggleConfirm(e, c)}
+                              title={
+                                isConfirmed
+                                  ? locale === "sv"
+                                    ? "Ångra bekräftelse"
+                                    : "Undo confirm"
+                                  : locale === "sv"
+                                  ? "Snabb-bekräfta förväntat belopp"
+                                  : "1-tap confirm expected"
+                              }
+                              className="mt-0.5 shrink-0 rounded-full p-0.5 hover:scale-110 transition"
+                            >
                               {isConfirmed ? (
                                 <CheckCircle2 className="h-5 w-5 text-[#057b40]" />
                               ) : hasPartialTx ? (
                                 <Layers className="h-5 w-5 text-[#f09236]" />
                               ) : (
-                                <Circle className="h-5 w-5 text-[#c5c5ba]" />
+                                <Circle className="h-5 w-5 text-[#c5c5ba] hover:text-[#057b40]" />
                               )}
-                            </div>
+                            </button>
 
                             <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold text-[#282825]">
-                                {item.name}
+                              <div className="flex items-center gap-1.5">
+                                <span className="truncate text-sm font-semibold text-[#282825]">
+                                  {item.name}
+                                </span>
+                                {item.cost_split &&
+                                  item.cost_split !== "shared" && (
+                                    <span className="rounded-full bg-[#e1edfe] px-2 py-0.2 text-[10px] font-bold text-[#2173be]">
+                                      {item.cost_split === "personal_a"
+                                        ? household.partner_a_name || "A"
+                                        : household.partner_b_name || "B"}
+                                    </span>
+                                  )}
                               </div>
                               <div className="mt-0.5 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
                                 <CalendarClock className="h-3 w-3 shrink-0 text-[#8f8f89]" />
                                 <span>{coverageLabel}</span>
+                                {hasGoal && (
+                                  <span className="inline-flex items-center gap-0.5 rounded-full bg-[#f6e6fc] px-2 py-0.2 font-sans text-[10px] font-bold text-[#7a2899]">
+                                    <Target className="h-2.5 w-2.5" />
+                                    {goalPct}%
+                                  </span>
+                                )}
                                 {record?.notes && (
                                   <span className="rounded-full bg-[#ffe81a]/60 px-2 py-0.2 font-sans text-[10px] font-medium text-[#282825]">
                                     {record.notes}
@@ -1267,7 +1591,7 @@ export default function BudgetAppPage() {
                               </>
                             )}
                           </div>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -1276,7 +1600,7 @@ export default function BudgetAppPage() {
             })}
           </div>
 
-          {/* Add Group / Add Item bottom pill buttons */}
+          {/* Bottom Action Strip: Add Item, Add Group, Import Bank, Month Close */}
           <div className="grid grid-cols-2 gap-2.5 pt-1">
             <button
               type="button"
@@ -1293,7 +1617,10 @@ export default function BudgetAppPage() {
             </button>
             <button
               type="button"
-              onClick={() => setGroupModalOpen(true)}
+              onClick={() => {
+                setEditingGroup(null);
+                setGroupModalOpen(true);
+              }}
               className="flex items-center justify-center gap-2 rounded-full border border-[#282825] bg-white py-3 text-xs font-semibold text-[#282825] hover:bg-[#ecece9] transition"
             >
               <FolderPlus className="h-4 w-4" />
@@ -1305,9 +1632,13 @@ export default function BudgetAppPage() {
 
       {activeTab === "insights" && (
         <InsightsView
+          household={household}
           groups={groups}
+          items={items}
+          records={records}
           computedItems={computedItems}
           yearMonth={yearMonth}
+          viewMode={viewMode}
           currency={household.currency}
           locale={locale}
         />
@@ -1320,10 +1651,12 @@ export default function BudgetAppPage() {
           userEmail={userEmail}
           dbReady={dbReady}
           locale={locale}
+          theme={theme}
           currency={household.currency}
           onChangeLocale={setLocale}
+          onChangeTheme={setTheme}
           onChangeCurrency={handleChangeCurrency}
-          onUpdateHouseholdName={handleUpdateHouseholdName}
+          onUpdateHousehold={handleUpdateHousehold}
           onJoinHouseholdByCode={handleJoinHouseholdByCode}
           onSignOut={async () => {
             await supabase.auth.signOut();
@@ -1358,6 +1691,8 @@ export default function BudgetAppPage() {
         unexpectedMode={unexpectedMode}
         yearMonth={yearMonth}
         groups={groups}
+        partnerAName={household.partner_a_name}
+        partnerBName={household.partner_b_name}
         currency={household.currency}
         locale={locale}
         onClose={() => {
@@ -1369,12 +1704,43 @@ export default function BudgetAppPage() {
         onDeleteItem={handleDeleteItem}
       />
 
-      {/* Add Custom Group Modal */}
+      {/* Add / Edit Custom Group Modal */}
       <GroupFormModal
         open={groupModalOpen}
+        editingGroup={editingGroup}
         locale={locale}
-        onClose={() => setGroupModalOpen(false)}
+        onClose={() => {
+          setGroupModalOpen(false);
+          setEditingGroup(null);
+        }}
         onSaveGroup={handleSaveGroup}
+        onDeleteGroup={handleDeleteGroup}
+        onMoveGroup={handleMoveGroup}
+      />
+
+      {/* Bank / Credit Card CSV & XLSX Import Modal */}
+      <BankImportModal
+        open={importModalOpen}
+        yearMonth={yearMonth}
+        groups={groups}
+        items={items}
+        currency={household.currency}
+        locale={locale}
+        onClose={() => setImportModalOpen(false)}
+        onImportRows={handleImportRows}
+      />
+
+      {/* Month-End Close & Rollover Wizard Modal */}
+      <MonthCloseModal
+        open={monthCloseModalOpen}
+        yearMonth={yearMonth}
+        computedItems={computedItems}
+        leftToSpend={summary.leftToSpend}
+        currency={household.currency}
+        locale={locale}
+        onClose={() => setMonthCloseModalOpen(false)}
+        onBulkConfirmItems={handleBulkConfirmItems}
+        onRolloverToSavings={handleRolloverToSavings}
       />
 
       {/* Ellipsus-styled Mobile Bottom Navigation Bar */}

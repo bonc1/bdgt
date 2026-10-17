@@ -9,17 +9,24 @@ import {
   Layers,
   Receipt,
   Sparkles,
+  SunSnow,
+  Users,
+  Target,
+  ArrowUp,
+  ArrowDown,
 } from "lucide-react";
 import {
   BudgetGroup,
   BudgetGroupKind,
   BudgetItem,
+  CostSplit,
   EntryMode,
   Locale,
   RecurrenceInterval,
 } from "@/lib/types";
 import {
   MONTH_NAMES,
+  SHORT_MONTH_NAMES,
   formatCurrency,
   formatYearMonthLabel,
   getRecurrenceLabel,
@@ -33,6 +40,8 @@ interface ItemFormModalProps {
   unexpectedMode?: boolean;
   yearMonth: string;
   groups: BudgetGroup[];
+  partnerAName?: string;
+  partnerBName?: string;
   currency: string;
   locale: Locale;
   onClose: () => void;
@@ -53,6 +62,8 @@ export function ItemFormModal({
   unexpectedMode = false,
   yearMonth,
   groups,
+  partnerAName = "Partner A",
+  partnerBName = "Partner B",
   currency,
   locale,
   onClose,
@@ -71,6 +82,11 @@ export function ItemFormModal({
   );
   const [coverageMonths, setCoverageMonths] = useState<number>(1);
   const [isVariable, setIsVariable] = useState(false);
+  const [seasonalMap, setSeasonalMap] = useState<Record<string, number>>({});
+  const [showSeasonalGrid, setShowSeasonalGrid] = useState(false);
+  const [costSplit, setCostSplit] = useState<CostSplit>("shared");
+  const [targetAmount, setTargetAmount] = useState<string>("");
+  const [currentSaved, setCurrentSaved] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -93,6 +109,20 @@ export function ItemFormModal({
       setAnchorMonth(editingItem.anchor_month);
       setCoverageMonths(editingItem.coverage_months);
       setIsVariable(editingItem.is_variable_estimate);
+      setSeasonalMap(editingItem.seasonal_amounts || {});
+      setShowSeasonalGrid(
+        Boolean(
+          editingItem.seasonal_amounts &&
+            Object.keys(editingItem.seasonal_amounts).length > 0
+        )
+      );
+      setCostSplit(editingItem.cost_split || "shared");
+      setTargetAmount(
+        editingItem.target_amount ? String(editingItem.target_amount) : ""
+      );
+      setCurrentSaved(
+        editingItem.current_saved ? String(editingItem.current_saved) : ""
+      );
     } else {
       const firstExpenseGrp =
         groups.find((g) => g.kind === "expense")?.id || groups[0]?.id || "";
@@ -105,14 +135,35 @@ export function ItemFormModal({
       setAnchorMonth(activeM);
       setCoverageMonths(1);
       setIsVariable(false);
+      setSeasonalMap({});
+      setShowSeasonalGrid(false);
+      setCostSplit("shared");
+      setTargetAmount("");
+      setCurrentSaved("");
     }
   }, [open, editingItem, defaultGroupId, unexpectedMode, yearMonth, groups]);
 
   if (!open) return null;
 
+  const selectedGroup = groups.find((g) => g.id === groupId);
+  const isSavingsGroup = selectedGroup?.kind === "savings";
+
   const handleRecurrenceChange = (val: RecurrenceInterval) => {
     setRecurrence(val);
     setCoverageMonths(val || 1);
+  };
+
+  const applyWinterCurvePreset = () => {
+    const base = parseFloat(expectedAmount) || 2000;
+    const factors = [
+      1.55, 1.45, 1.1, 0.8, 0.6, 0.48, 0.45, 0.48, 0.65, 1.0, 1.25, 1.5,
+    ];
+    const next: Record<string, number> = {};
+    factors.forEach((f, idx) => {
+      next[String(idx + 1)] = Math.round((base * f) / 50) * 50;
+    });
+    setSeasonalMap(next);
+    setShowSeasonalGrid(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -122,6 +173,9 @@ export function ItemFormModal({
     setSaving(true);
     try {
       const finalInterval: RecurrenceInterval = isOneTime ? 0 : recurrence;
+      const parsedTarget = parseFloat(targetAmount);
+      const parsedSaved = parseFloat(currentSaved);
+
       await onSaveItem(
         {
           name: name.trim(),
@@ -133,6 +187,13 @@ export function ItemFormModal({
           anchor_month: anchorMonth,
           coverage_months: isOneTime ? 1 : coverageMonths,
           is_variable_estimate: isVariable,
+          seasonal_amounts:
+            isVariable && showSeasonalGrid && Object.keys(seasonalMap).length > 0
+              ? seasonalMap
+              : null,
+          cost_split: costSplit,
+          target_amount: !isNaN(parsedTarget) && parsedTarget > 0 ? parsedTarget : null,
+          current_saved: !isNaN(parsedSaved) && parsedSaved >= 0 ? parsedSaved : 0,
         },
         editingItem?.id,
         unexpectedMode ? amount : undefined
@@ -233,7 +294,7 @@ export function ItemFormModal({
             </div>
           </div>
 
-          {/* Segmented Toggle: Recurring vs One-Time (or Future Prompt in Unexpected Mode) */}
+          {/* Segmented Toggle: Recurring vs One-Time */}
           {unexpectedMode ? (
             <div className="rounded-2xl border border-[#282825] bg-[#fdeee0] p-3.5 space-y-2.5">
               <div className="flex items-center gap-1.5 text-xs font-bold text-[#282825]">
@@ -246,9 +307,7 @@ export function ItemFormModal({
               <div className="grid grid-cols-1 gap-1.5 pt-0.5">
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsOneTime(true);
-                  }}
+                  onClick={() => setIsOneTime(true)}
                   className={`rounded-full py-2 px-3.5 text-left text-xs font-semibold border transition ${
                     isOneTime
                       ? "border-[#282825] bg-[#0c0d0d] text-white"
@@ -408,6 +467,84 @@ export function ItemFormModal({
             </div>
           )}
 
+          {/* Partner Split Selector */}
+          <div className="rounded-2xl border border-[#c5c5ba] bg-white p-3.5">
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-[#282825] mb-2">
+              <Users className="h-3.5 w-3.5 text-[#2173be]" />
+              {locale === "sv"
+                ? "Kostnadsfördelning i hushållet"
+                : "Household cost split"}
+            </label>
+            <div className="grid grid-cols-3 gap-1.5">
+              {(
+                [
+                  {
+                    id: "shared" as CostSplit,
+                    label: locale === "sv" ? "Gemensam" : "Shared",
+                  },
+                  { id: "personal_a" as CostSplit, label: partnerAName },
+                  { id: "personal_b" as CostSplit, label: partnerBName },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setCostSplit(opt.id)}
+                  className={`rounded-full border py-1.5 px-2 text-xs font-semibold transition ${
+                    costSplit === opt.id
+                      ? "border-[#282825] bg-[#e1edfe] text-[#2173be]"
+                      : "border-[#c5c5ba] bg-[#f8f8f7] text-[#64645e]"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Savings Goal Tracker Fields (shown when group is savings) */}
+          {isSavingsGroup && (
+            <div className="rounded-2xl border border-[#282825] bg-[#f6e6fc] p-3.5 space-y-2.5">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-[#7a2899]">
+                <Target className="h-4 w-4" />
+                <span>
+                  {locale === "sv"
+                    ? "Sparmål & Nuvarande saldo (Valfritt)"
+                    : "Savings Goal & Current Balance (Optional)"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#282825] mb-1">
+                    {locale === "sv" ? "Målbelopp" : "Target goal"} ({currency})
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    value={targetAmount}
+                    onChange={(e) => setTargetAmount(e.target.value)}
+                    placeholder="50000"
+                    className="w-full rounded-full border border-[#c5c5ba] bg-white px-3 py-1.5 font-mono text-xs font-bold text-[#282825]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#282825] mb-1">
+                    {locale === "sv" ? "Redan sparat" : "Saved so far"} (
+                    {currency})
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    value={currentSaved}
+                    onChange={(e) => setCurrentSaved(e.target.value)}
+                    placeholder="25000"
+                    className="w-full rounded-full border border-[#c5c5ba] bg-white px-3 py-1.5 font-mono text-xs font-bold text-[#282825]"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Entry mode: Single Bill vs Multi Entry */}
           {!unexpectedMode && (
             <div>
@@ -444,17 +581,79 @@ export function ItemFormModal({
             </div>
           )}
 
-          {/* Seasonal variable checkbox */}
+          {/* Seasonal variable checkbox + Monthly Curve Grid */}
           {!isOneTime && (
-            <label className="flex items-center gap-2.5 text-xs font-medium text-[#282825] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={isVariable}
-                onChange={(e) => setIsVariable(e.target.checked)}
-                className="h-4 w-4 rounded border-[#282825] accent-[#057b40]"
-              />
-              <span>{t.itemForm.variableEstimate}</span>
-            </label>
+            <div className="space-y-2.5">
+              <label className="flex items-center gap-2.5 text-xs font-medium text-[#282825] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isVariable}
+                  onChange={(e) => {
+                    setIsVariable(e.target.checked);
+                    if (e.target.checked && Object.keys(seasonalMap).length > 0) {
+                      setShowSeasonalGrid(true);
+                    }
+                  }}
+                  className="h-4 w-4 rounded border-[#282825] accent-[#057b40]"
+                />
+                <span>{t.itemForm.variableEstimate}</span>
+              </label>
+
+              {isVariable && (
+                <div className="rounded-2xl border border-[#c5c5ba] bg-white p-3.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-xs font-semibold text-[#282825]">
+                      <SunSnow className="h-4 w-4 text-[#2173be]" />
+                      {locale === "sv"
+                        ? "Säsongskurva per månad (Jan–Dec)"
+                        : "Seasonal monthly curve (Jan–Dec)"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={applyWinterCurvePreset}
+                      className="rounded-full bg-[#e1edfe] px-2.5 py-1 text-[11px] font-bold text-[#2173be] hover:bg-[#b8d5ff]"
+                    >
+                      {locale === "sv"
+                        ? "Auto: Vinterhöjd el"
+                        : "Preset: Winter peak"}
+                    </button>
+                  </div>
+
+                  {showSeasonalGrid && (
+                    <div className="grid grid-cols-3 gap-2">
+                      {SHORT_MONTH_NAMES[locale].map((mShort, idx) => {
+                        const mKey = String(idx + 1);
+                        const val =
+                          seasonalMap[mKey] ??
+                          (parseFloat(expectedAmount) || 0);
+                        return (
+                          <div
+                            key={mKey}
+                            className="rounded-xl bg-[#f8f8f7] px-2.5 py-1.5 border border-[#ecece9]"
+                          >
+                            <div className="text-[10px] font-bold uppercase text-[#64645e]">
+                              {mShort}
+                            </div>
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              value={val}
+                              onChange={(e) =>
+                                setSeasonalMap((prev) => ({
+                                  ...prev,
+                                  [mKey]: parseFloat(e.target.value) || 0,
+                                }))
+                              }
+                              className="w-full bg-transparent font-mono text-xs font-bold text-[#282825] focus:outline-none"
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
           {/* Actions */}
@@ -500,26 +699,54 @@ export function ItemFormModal({
 
 interface GroupFormModalProps {
   open: boolean;
+  editingGroup?: BudgetGroup | null;
   locale: Locale;
   onClose: () => void;
   onSaveGroup: (
     name: string,
     kind: BudgetGroupKind,
-    color: string
+    color: string,
+    existingId?: string
   ) => Promise<void>;
+  onDeleteGroup?: (id: string) => Promise<void>;
+  onMoveGroup?: (id: string, direction: "up" | "down") => Promise<void>;
 }
+
+const HIGHLIGHTER_COLORS = [
+  { id: "green", labelSv: "Grön", labelEn: "Green", swatch: "bg-[#b5e3c4]" },
+  { id: "blue", labelSv: "Blå", labelEn: "Blue", swatch: "bg-[#b8d5ff]" },
+  { id: "orange", labelSv: "Orange", labelEn: "Orange", swatch: "bg-[#faca9e]" },
+  { id: "coral", labelSv: "Korall", labelEn: "Coral", swatch: "bg-[#fbc8c5]" },
+  { id: "purple", labelSv: "Lila", labelEn: "Purple", swatch: "bg-[#edc6fb]" },
+];
 
 export function GroupFormModal({
   open,
+  editingGroup,
   locale,
   onClose,
   onSaveGroup,
+  onDeleteGroup,
+  onMoveGroup,
 }: GroupFormModalProps) {
   const t = translations[locale];
   const [name, setName] = useState("");
   const [kind, setKind] = useState<BudgetGroupKind>("expense");
-  const [color] = useState("blue");
+  const [color, setColor] = useState("blue");
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    if (editingGroup) {
+      setName(editingGroup.name);
+      setKind(editingGroup.kind);
+      setColor(editingGroup.color || "blue");
+    } else {
+      setName("");
+      setKind("expense");
+      setColor("blue");
+    }
+  }, [open, editingGroup]);
 
   if (!open) return null;
 
@@ -528,7 +755,7 @@ export function GroupFormModal({
     if (!name.trim()) return;
     setSaving(true);
     try {
-      await onSaveGroup(name.trim(), kind, color);
+      await onSaveGroup(name.trim(), kind, color, editingGroup?.id);
       setName("");
       onClose();
     } finally {
@@ -548,7 +775,11 @@ export function GroupFormModal({
         <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-[#c5c5ba]" />
         <div className="flex items-center justify-between">
           <h3 className="font-serif text-2xl text-[#282825]">
-            {t.groupForm.titleNew}
+            {editingGroup
+              ? locale === "sv"
+                ? "Redigera grupp"
+                : "Edit group"
+              : t.groupForm.titleNew}
           </h3>
           <button
             type="button"
@@ -602,21 +833,90 @@ export function GroupFormModal({
             </div>
           </div>
 
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-full border border-[#282825] bg-white px-4 py-2.5 text-xs font-semibold text-[#282825]"
-            >
-              {t.actions.cancel}
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-full bg-[#0c0d0d] px-6 py-2.5 text-xs font-semibold text-white"
-            >
-              {t.actions.save}
-            </button>
+          {/* Ellipsus Highlighter Color Picker */}
+          <div>
+            <label className="block text-xs font-semibold text-[#282825] mb-1.5">
+              {t.groupForm.color}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {HIGHLIGHTER_COLORS.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setColor(c.id)}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                    color === c.id
+                      ? "border-[#282825] bg-white shadow-xs"
+                      : "border-[#c5c5ba] bg-[#f8f8f7]"
+                  }`}
+                >
+                  <span className={`h-3 w-3 rounded-full ${c.swatch}`} />
+                  <span>{locale === "sv" ? c.labelSv : c.labelEn}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Reorder buttons when editing */}
+          {editingGroup && onMoveGroup && (
+            <div className="flex items-center justify-between rounded-2xl bg-white p-3 border border-[#c5c5ba]">
+              <span className="text-xs font-semibold text-[#64645e]">
+                {locale === "sv" ? "Ändra ordning" : "Change group order"}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => onMoveGroup(editingGroup.id, "up")}
+                  className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#f8f8f7] px-3 py-1 text-xs font-semibold"
+                >
+                  <ArrowUp className="h-3.5 w-3.5" />
+                  {locale === "sv" ? "Upp" : "Up"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onMoveGroup(editingGroup.id, "down")}
+                  className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#f8f8f7] px-3 py-1 text-xs font-semibold"
+                >
+                  <ArrowDown className="h-3.5 w-3.5" />
+                  {locale === "sv" ? "Ner" : "Down"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between gap-2 pt-2">
+            {editingGroup && onDeleteGroup ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  await onDeleteGroup(editingGroup.id);
+                  onClose();
+                }}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#fdeeed] border border-[#eb5b55] px-4 py-2.5 text-xs font-semibold text-[#b81a14]"
+              >
+                <Trash2 className="h-4 w-4" />
+                {t.actions.delete}
+              </button>
+            ) : (
+              <div />
+            )}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-full border border-[#282825] bg-white px-4 py-2.5 text-xs font-semibold text-[#282825]"
+              >
+                {t.actions.cancel}
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-full bg-[#0c0d0d] px-6 py-2.5 text-xs font-semibold text-white"
+              >
+                {t.actions.save}
+              </button>
+            </div>
           </div>
         </form>
       </div>
