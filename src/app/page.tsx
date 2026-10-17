@@ -181,6 +181,19 @@ export default function BudgetAppPage() {
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [monthCloseModalOpen, setMonthCloseModalOpen] = useState(false);
 
+  // Inline quick-edit & quick-add state for the Top Income / Paycheck Banner Card
+  const [inlineIncomeDrafts, setInlineIncomeDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [quickIncomeGroupId, setQuickIncomeGroupId] = useState<string | null>(
+    null
+  );
+  const [quickIncomeName, setQuickIncomeName] = useState("");
+  const [quickIncomeAmount, setQuickIncomeAmount] = useState("");
+  const [quickIncomeSplit, setQuickIncomeSplit] = useState<
+    "shared" | "personal_a" | "personal_b"
+  >("shared");
+
   const t = translations[locale];
 
   // Apply theme attribute to <html>
@@ -1619,6 +1632,513 @@ export default function BudgetAppPage() {
                   : 0;
               const isCollapsed = Boolean(collapsedGroupIds[group.id]);
               const hl = getGroupHighlighter(group, idx);
+
+              if (group.kind === "income") {
+                const isQuickAddOpen = quickIncomeGroupId === group.id;
+                const incomePresets =
+                  locale === "sv"
+                    ? [
+                        "Lön (Netto)",
+                        "Barnbidrag",
+                        "Föräldrapenning",
+                        "Utdelning / Bonus",
+                      ]
+                    : [
+                        "Salary (Net)",
+                        "Child Allowance",
+                        "Parental Pay",
+                        "Bonus / Dividend",
+                      ];
+
+                return (
+                  <section
+                    key={group.id}
+                    className="rounded-3xl border-2 border-[#529a6a] bg-[#f4fbf6] overflow-hidden shadow-editorial"
+                  >
+                    {/* Dedicated Top Inkomster / Paycheck Banner Header */}
+                    <div
+                      className={`bg-[#e7f4eb] ${
+                        isCollapsed ? "" : "border-b border-[#b5e3c4]"
+                      } px-4 pt-3.5 pb-3`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedGroupIds((prev) => ({
+                              ...prev,
+                              [group.id]: !prev[group.id],
+                            }))
+                          }
+                          className="flex flex-col text-left hover:opacity-85 transition min-w-0 flex-1"
+                        >
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold tracking-wider uppercase text-[#057b40]">
+                            <ArrowUpRight className="h-3.5 w-3.5" />
+                            <span>
+                              {locale === "sv"
+                                ? "Månadens inkomster & utbetalningar"
+                                : "Monthly income & payouts"}
+                            </span>
+                            {isCollapsed ? (
+                              <ChevronRight className="h-3.5 w-3.5 ml-0.5" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5 ml-0.5" />
+                            )}
+                          </span>
+                          <h2 className="mt-0.5 font-serif text-2xl leading-snug break-words text-[#282825]">
+                            {group.name}
+                          </h2>
+                        </button>
+
+                        <div className="text-right shrink-0">
+                          <div className="font-serif text-2xl leading-none text-[#057b40]">
+                            +
+                            {formatCurrency(
+                              groupEffective,
+                              household.currency,
+                              locale
+                            )}
+                          </div>
+                          <div className="mt-1 flex items-center justify-end gap-1.5 font-mono text-[11px] text-[#64645e]">
+                            <span>
+                              {locale === "sv" ? "Budget:" : "Expected:"}{" "}
+                              {formatCurrency(
+                                groupExpected,
+                                household.currency,
+                                locale
+                              )}
+                            </span>
+                            {Math.round(groupVariance) !== 0 && (
+                              <span
+                                className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
+                                  groupVariance > 0
+                                    ? "bg-white text-[#057b40] border border-[#529a6a]"
+                                    : "bg-[#fdeeed] text-[#b81a14]"
+                                }`}
+                              >
+                                {groupVariance > 0 ? "+" : ""}
+                                {formatCurrency(
+                                  groupVariance,
+                                  household.currency,
+                                  locale
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-[11px]">
+                          <span className="rounded-full bg-white/90 px-2.5 py-0.5 font-mono font-bold text-[#057b40] border border-[#529a6a]/30">
+                            {confirmedInGroup.length}/{dueInGroup.length}{" "}
+                            {locale === "sv" ? "utbetalda" : "received"}
+                          </span>
+                          <span className="text-[#64645e]">
+                            {locale === "sv"
+                              ? "Skriv belopp direkt i rutan nedan"
+                              : "Edit payout amounts directly below"}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingGroup(group);
+                              setGroupModalOpen(true);
+                            }}
+                            className="rounded-full border border-[#282825]/20 bg-white/80 p-1.5 text-[#64645e] hover:bg-white hover:text-[#282825] transition"
+                            title={
+                              locale === "sv" ? "Redigera grupp" : "Edit group"
+                            }
+                          >
+                            <Settings2 className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setQuickIncomeGroupId(
+                                isQuickAddOpen ? null : group.id
+                              )
+                            }
+                            className="inline-flex items-center gap-1 rounded-full border border-[#057b40] bg-[#057b40] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#046333] transition"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            <span>
+                              {locale === "sv" ? "Ny inkomst" : "Add income"}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Inline Paycheck Cards */}
+                    {!isCollapsed && (
+                      <div className="p-3 space-y-2.5">
+                        {groupItems.map((c) => {
+                          const {
+                            item,
+                            record,
+                            displayedExpected,
+                            displayedActual,
+                            variance,
+                          } = c;
+                          const isConfirmed = record?.status === "confirmed";
+                          const currentEffectiveVal =
+                            displayedActual !== null
+                              ? displayedActual
+                              : displayedExpected;
+                          const draftKey = `${item.id}::${yearMonth}`;
+                          const draftStr =
+                            inlineIncomeDrafts[draftKey] !== undefined
+                              ? inlineIncomeDrafts[draftKey]
+                              : String(Math.round(currentEffectiveVal));
+                          const parsedDraft = Number(draftStr);
+                          const isDraftDirty =
+                            inlineIncomeDrafts[draftKey] !== undefined &&
+                            !isNaN(parsedDraft) &&
+                            parsedDraft >= 0 &&
+                            (Math.round(parsedDraft) !==
+                              Math.round(currentEffectiveVal) ||
+                              !isConfirmed);
+
+                          const commitInlineIncome = async () => {
+                            const val =
+                              inlineIncomeDrafts[draftKey] !== undefined
+                                ? Number(inlineIncomeDrafts[draftKey])
+                                : currentEffectiveVal;
+                            if (!isNaN(val) && val >= 0) {
+                              await handleConfirmActual(
+                                item.id,
+                                val,
+                                record?.notes || ""
+                              );
+                              setInlineIncomeDrafts((prev) => {
+                                const next = { ...prev };
+                                delete next[draftKey];
+                                return next;
+                              });
+                            }
+                          };
+
+                          return (
+                            <div
+                              key={item.id}
+                              className={`rounded-2xl border p-3 transition ${
+                                isConfirmed
+                                  ? "border-[#529a6a] bg-white shadow-2xs"
+                                  : "border-[#c5c5ba] bg-white/90"
+                              }`}
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2.5">
+                                {/* Left: Confirm Check + Income Source Name & Budget */}
+                                <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                                  <button
+                                    type="button"
+                                    onClick={(e) =>
+                                      handleQuickToggleConfirm(e, c)
+                                    }
+                                    className="mt-0.5 shrink-0 rounded-full p-0.5 hover:scale-110 transition"
+                                    title={
+                                      isConfirmed
+                                        ? locale === "sv"
+                                          ? "Markera som ej utbetald"
+                                          : "Mark unconfirmed"
+                                        : locale === "sv"
+                                        ? "Bekräfta inkomst"
+                                        : "Confirm payout"
+                                    }
+                                  >
+                                    {isConfirmed ? (
+                                      <CheckCircle2 className="h-5 w-5 text-[#057b40]" />
+                                    ) : (
+                                      <Circle className="h-5 w-5 text-[#529a6a] hover:text-[#057b40]" />
+                                    )}
+                                  </button>
+
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSelectedItemId(item.id)
+                                        }
+                                        className="text-left text-sm font-bold leading-snug break-words text-[#282825] hover:text-[#057b40] hover:underline"
+                                      >
+                                        {item.name}
+                                      </button>
+                                      {item.cost_split &&
+                                        item.cost_split !== "shared" && (
+                                          <span className="rounded-full bg-[#e1edfe] px-2 py-0.2 text-[10px] font-bold text-[#2173be]">
+                                            {item.cost_split === "personal_a"
+                                              ? household.partner_a_name || "A"
+                                              : household.partner_b_name || "B"}
+                                          </span>
+                                        )}
+                                    </div>
+
+                                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
+                                      <span>
+                                        {locale === "sv" ? "Budget:" : "Plan:"}{" "}
+                                        {formatCurrency(
+                                          displayedExpected,
+                                          household.currency,
+                                          locale
+                                        )}
+                                      </span>
+                                      {variance !== null &&
+                                        Math.round(variance) !== 0 && (
+                                          <span
+                                            className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
+                                              variance > 0
+                                                ? "bg-[#e7f4eb] text-[#057b40]"
+                                                : "bg-[#fdeee0] text-[#b85d10]"
+                                            }`}
+                                          >
+                                            {variance > 0 ? "+" : ""}
+                                            {formatCurrency(
+                                              variance,
+                                              household.currency,
+                                              locale
+                                            )}
+                                          </span>
+                                        )}
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSelectedItemId(item.id)
+                                        }
+                                        className="font-sans text-[10px] font-semibold text-[#057b40] hover:underline"
+                                      >
+                                        {locale === "sv"
+                                          ? "Detaljer →"
+                                          : "Details →"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Right: Direct Inline Payout Input Box */}
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <div
+                                    className={`flex items-center gap-1 rounded-xl border px-2.5 py-1.5 transition ${
+                                      isConfirmed
+                                        ? "border-[#529a6a] bg-[#e7f4eb]/60 focus-within:bg-white focus-within:border-[#057b40]"
+                                        : "border-[#c5c5ba] bg-[#f8f8f7] focus-within:bg-white focus-within:border-[#057b40]"
+                                    }`}
+                                  >
+                                    <span className="font-serif text-base font-bold text-[#057b40]">
+                                      +
+                                    </span>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={draftStr}
+                                      onChange={(e) =>
+                                        setInlineIncomeDrafts((prev) => ({
+                                          ...prev,
+                                          [draftKey]: e.target.value,
+                                        }))
+                                      }
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          commitInlineIncome();
+                                        }
+                                      }}
+                                      aria-label={item.name}
+                                      className="w-24 bg-transparent text-right font-serif text-lg leading-none text-[#282825] focus:outline-none"
+                                    />
+                                    <span className="font-mono text-[10px] font-semibold text-[#64645e]">
+                                      {household.currency === "SEK"
+                                        ? "kr"
+                                        : household.currency}
+                                    </span>
+                                  </div>
+
+                                  {(isDraftDirty || !isConfirmed) && (
+                                    <button
+                                      type="button"
+                                      onClick={commitInlineIncome}
+                                      className="inline-flex items-center justify-center rounded-xl bg-[#057b40] p-2 text-white hover:bg-[#046333] transition shadow-2xs"
+                                      title={
+                                        locale === "sv"
+                                          ? "Spara & bekräfta utbetalning"
+                                          : "Save & confirm payout"
+                                      }
+                                    >
+                                      <Check className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Quick-Add New Income Source Directly in the Banner */}
+                        {isQuickAddOpen ? (
+                          <form
+                            onSubmit={async (e) => {
+                              e.preventDefault();
+                              const cleanName = quickIncomeName.trim();
+                              const numAmt = Number(quickIncomeAmount);
+                              if (!cleanName || isNaN(numAmt) || numAmt <= 0)
+                                return;
+                              await handleSaveItem(
+                                {
+                                  group_id: group.id,
+                                  name: cleanName,
+                                  expected_amount: numAmt,
+                                  frequency: "monthly",
+                                  payment_month: 1,
+                                  entry_mode: "single",
+                                  cost_split: quickIncomeSplit,
+                                },
+                                undefined,
+                                numAmt
+                              );
+                              setQuickIncomeName("");
+                              setQuickIncomeAmount("");
+                              setQuickIncomeGroupId(null);
+                            }}
+                            className="rounded-2xl border border-[#057b40] bg-white p-3 space-y-2.5"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-[#057b40]">
+                                {locale === "sv"
+                                  ? "Lägg till ny inkomstkälla"
+                                  : "Add new income source"}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setQuickIncomeGroupId(null)}
+                                className="text-[11px] font-semibold text-[#64645e] hover:text-[#282825]"
+                              >
+                                {t.actions.cancel}
+                              </button>
+                            </div>
+
+                            {/* Preset Quick-Fill Chips */}
+                            <div className="flex flex-wrap gap-1.5">
+                              {incomePresets.map((preset) => (
+                                <button
+                                  key={preset}
+                                  type="button"
+                                  onClick={() => setQuickIncomeName(preset)}
+                                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold border transition ${
+                                    quickIncomeName === preset
+                                      ? "border-[#057b40] bg-[#057b40] text-white"
+                                      : "border-[#b5e3c4] bg-[#e7f4eb]/60 text-[#057b40] hover:border-[#057b40]"
+                                  }`}
+                                >
+                                  + {preset}
+                                </button>
+                              ))}
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <input
+                                type="text"
+                                required
+                                placeholder={
+                                  locale === "sv"
+                                    ? "Benämning (t.ex. Lön Maja)"
+                                    : "Name (e.g. Salary)"
+                                }
+                                value={quickIncomeName}
+                                onChange={(e) =>
+                                  setQuickIncomeName(e.target.value)
+                                }
+                                className="rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 text-xs font-semibold text-[#282825] focus:border-[#057b40] focus:bg-white focus:outline-none"
+                              />
+                              <input
+                                type="number"
+                                step="any"
+                                required
+                                placeholder={
+                                  locale === "sv"
+                                    ? "Belopp efter skatt (kr)"
+                                    : "Net amount"
+                                }
+                                value={quickIncomeAmount}
+                                onChange={(e) =>
+                                  setQuickIncomeAmount(e.target.value)
+                                }
+                                className="rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 font-mono text-xs font-semibold text-[#282825] focus:border-[#057b40] focus:bg-white focus:outline-none"
+                              />
+                              <select
+                                value={quickIncomeSplit}
+                                onChange={(e) =>
+                                  setQuickIncomeSplit(
+                                    e.target.value as
+                                      | "shared"
+                                      | "personal_a"
+                                      | "personal_b"
+                                  )
+                                }
+                                className="rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2.5 py-2 text-xs font-semibold text-[#282825]"
+                              >
+                                <option value="shared">
+                                  {locale === "sv" ? "Gemensam" : "Shared"}
+                                </option>
+                                <option value="personal_a">
+                                  {household.partner_a_name || "Partner A"}
+                                </option>
+                                <option value="personal_b">
+                                  {household.partner_b_name || "Partner B"}
+                                </option>
+                              </select>
+                            </div>
+
+                            <button
+                              type="submit"
+                              className="w-full rounded-full bg-[#057b40] py-2 text-xs font-bold text-white hover:bg-[#046333] transition"
+                            >
+                              {locale === "sv"
+                                ? "Spara & bekräfta inkomst"
+                                : "Save & confirm income"}
+                            </button>
+                          </form>
+                        ) : (
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 px-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {incomePresets.slice(0, 3).map((preset) => (
+                                <button
+                                  key={preset}
+                                  type="button"
+                                  onClick={() => {
+                                    setQuickIncomeName(preset);
+                                    setQuickIncomeGroupId(group.id);
+                                  }}
+                                  className="rounded-full border border-[#529a6a]/40 bg-white/80 px-2.5 py-1 text-[11px] font-semibold text-[#057b40] hover:border-[#057b40] hover:bg-white transition"
+                                >
+                                  + {preset}
+                                </button>
+                              ))}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingItem(null);
+                                setUnexpectedMode(false);
+                                setDefaultGroupIdForNew(group.id);
+                                setItemModalOpen(true);
+                              }}
+                              className="text-[11px] font-semibold text-[#057b40] hover:underline"
+                            >
+                              {locale === "sv"
+                                ? "Fler alternativ →"
+                                : "More options →"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                );
+              }
 
               return (
                 <section
