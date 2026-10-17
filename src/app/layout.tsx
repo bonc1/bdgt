@@ -1,5 +1,27 @@
 import type { Metadata, Viewport } from "next";
+import { Manrope, Instrument_Serif, Courier_Prime } from "next/font/google";
 import "./globals.css";
+
+const manrope = Manrope({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const instrumentSerif = Instrument_Serif({
+  weight: "400",
+  style: ["normal", "italic"],
+  subsets: ["latin"],
+  variable: "--font-serif",
+  display: "swap",
+});
+
+const courierPrime = Courier_Prime({
+  weight: ["400", "700"],
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "bdgt — Privatekonomi & Budgetuppföljning",
@@ -7,7 +29,7 @@ export const metadata: Metadata = {
     "Planera förväntade räkningar, kvartalsfakturor och följ upp faktiskt utfall i mobilen.",
   appleWebApp: {
     capable: true,
-    statusBarStyle: "black-translucent",
+    statusBarStyle: "default",
     title: "bdgt",
   },
   icons: {
@@ -21,7 +43,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
-  themeColor: "#090d16",
+  themeColor: "#f4f4f2",
 };
 
 export default function RootLayout({
@@ -30,8 +52,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="sv" className="dark">
-      <body className="min-h-screen bg-[#090d16] text-slate-100 antialiased selection:bg-emerald-500/30">
+    <html
+      lang="sv"
+      className={`${manrope.variable} ${instrumentSerif.variable} ${courierPrime.variable}`}
+    >
+      <body className="min-h-screen bg-[#f4f4f2] font-sans text-[#282825] antialiased selection:bg-[#ffe81a]/60">
         {children}
       </body>
     </html>

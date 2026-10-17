@@ -116,18 +116,24 @@ export function ItemFormModal({
   const parsedAmt = parseFloat(expectedAmount) || 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 backdrop-blur-xs">
-      <div className="w-full max-w-lg rounded-t-3xl border-t border-slate-800 bg-[#111726] p-5 pb-8 shadow-2xl max-h-[92vh] overflow-y-auto">
-        <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-700/80" />
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-[#282825]/45 backdrop-blur-xs"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-t-3xl border-t border-[#282825] bg-[#f4f4f2] p-5 pb-8 text-[#282825] shadow-sheet max-h-[92vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-[#c5c5ba]" />
 
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold text-white">
+          <h3 className="font-serif text-2xl text-[#282825]">
             {editingItem ? t.itemForm.titleEdit : t.itemForm.titleNew}
           </h3>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full bg-slate-800 p-2 text-slate-300 hover:bg-slate-700"
+            className="rounded-full border border-[#c5c5ba] bg-white p-2 text-[#282825] hover:border-[#282825]"
           >
             <X className="h-4 w-4" />
           </button>
@@ -136,7 +142,7 @@ export function ItemFormModal({
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           {/* Name */}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label className="block text-xs font-semibold text-[#282825] mb-1">
               {t.itemForm.name}
             </label>
             <input
@@ -149,20 +155,20 @@ export function ItemFormModal({
                   ? "t.ex. Elräkning, Vatten & Sop, Mat..."
                   : "e.g. Electricity, Water & Waste, Groceries..."
               }
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
+              className="w-full rounded-full border border-[#c5c5ba] bg-white px-4 py-2.5 text-sm text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
             />
           </div>
 
           {/* Group & Amount */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
+              <label className="block text-xs font-semibold text-[#282825] mb-1">
                 {t.itemForm.group}
               </label>
               <select
                 value={groupId}
                 onChange={(e) => setGroupId(e.target.value)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-full border border-[#c5c5ba] bg-white px-3.5 py-2.5 text-sm text-[#282825] focus:border-[#282825] focus:outline-none"
               >
                 {groups.map((g) => (
                   <option key={g.id} value={g.id}>
@@ -173,7 +179,7 @@ export function ItemFormModal({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-300 mb-1">
+              <label className="block text-xs font-semibold text-[#282825] mb-1">
                 {t.itemForm.expectedAmount} ({currency})
               </label>
               <input
@@ -185,50 +191,50 @@ export function ItemFormModal({
                 value={expectedAmount}
                 onChange={(e) => setExpectedAmount(e.target.value)}
                 placeholder="2000"
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm font-semibold text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-full border border-[#c5c5ba] bg-white px-4 py-2.5 font-mono text-sm font-bold text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
               />
             </div>
           </div>
 
           {/* Entry mode: Single Bill vs Multi Entry */}
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1.5">
+            <label className="block text-xs font-semibold text-[#282825] mb-1.5">
               {t.itemForm.entryMode}
             </label>
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => setEntryMode("single_bill")}
-                className={`flex items-start gap-2 rounded-xl border p-2.5 text-left text-xs transition ${
+                className={`flex items-start gap-2 rounded-2xl border p-3 text-left text-xs transition ${
                   entryMode === "single_bill"
-                    ? "border-emerald-500 bg-emerald-500/10 text-white"
-                    : "border-slate-800 bg-slate-900/60 text-slate-400"
+                    ? "border-[#282825] bg-[#e7f4eb] font-semibold text-[#282825]"
+                    : "border-[#c5c5ba] bg-white text-[#64645e]"
                 }`}
               >
-                <Receipt className="h-4 w-4 shrink-0 text-emerald-400 mt-0.5" />
+                <Receipt className="h-4 w-4 shrink-0 text-[#057b40] mt-0.5" />
                 <span>{t.itemForm.singleBill}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setEntryMode("multi_entry")}
-                className={`flex items-start gap-2 rounded-xl border p-2.5 text-left text-xs transition ${
+                className={`flex items-start gap-2 rounded-2xl border p-3 text-left text-xs transition ${
                   entryMode === "multi_entry"
-                    ? "border-amber-500 bg-amber-500/10 text-white"
-                    : "border-slate-800 bg-slate-900/60 text-slate-400"
+                    ? "border-[#282825] bg-[#fdeee0] font-semibold text-[#282825]"
+                    : "border-[#c5c5ba] bg-white text-[#64645e]"
                 }`}
               >
-                <Layers className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+                <Layers className="h-4 w-4 shrink-0 text-[#b85d10] mt-0.5" />
                 <span>{t.itemForm.multiEntry}</span>
               </button>
             </div>
           </div>
 
           {/* Recurrence interval */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-3.5 space-y-3">
+          <div className="rounded-2xl border border-[#c5c5ba] bg-white p-3.5 space-y-3">
             <div>
-              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300 mb-1">
-                <Repeat className="h-3.5 w-3.5 text-emerald-400" />
+              <label className="flex items-center gap-1.5 text-xs font-semibold text-[#282825] mb-1">
+                <Repeat className="h-3.5 w-3.5 text-[#057b40]" />
                 {t.itemForm.recurrence}
               </label>
               <select
@@ -238,7 +244,7 @@ export function ItemFormModal({
                     Number(e.target.value) as RecurrenceInterval
                   )
                 }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3.5 py-2 text-sm text-[#282825] focus:border-[#282825] focus:outline-none"
               >
                 {RECURRENCE_OPTIONS.map((interval) => (
                   <option key={interval} value={interval}>
@@ -251,14 +257,14 @@ export function ItemFormModal({
             {recurrence > 1 && (
               <div className="grid grid-cols-2 gap-3 pt-1">
                 <div>
-                  <label className="flex items-center gap-1 text-xs text-slate-300 mb-1">
-                    <Calendar className="h-3.5 w-3.5 text-slate-400" />
+                  <label className="flex items-center gap-1 text-xs font-medium text-[#64645e] mb-1">
+                    <Calendar className="h-3.5 w-3.5" />
                     {t.itemForm.anchorMonth}
                   </label>
                   <select
                     value={anchorMonth}
                     onChange={(e) => setAnchorMonth(Number(e.target.value))}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+                    className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 text-xs text-[#282825]"
                   >
                     {MONTH_NAMES[locale].map((mName, idx) => (
                       <option key={idx + 1} value={idx + 1}>
@@ -269,13 +275,13 @@ export function ItemFormModal({
                 </div>
 
                 <div>
-                  <label className="block text-xs text-slate-300 mb-1">
+                  <label className="block text-xs font-medium text-[#64645e] mb-1">
                     {t.itemForm.coverageMonths}
                   </label>
                   <select
                     value={coverageMonths}
                     onChange={(e) => setCoverageMonths(Number(e.target.value))}
-                    className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+                    className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-3 py-2 text-xs text-[#282825]"
                   >
                     {[1, 2, 3, 4, 6, 12].map((c) => (
                       <option key={c} value={c}>
@@ -288,7 +294,7 @@ export function ItemFormModal({
             )}
 
             {recurrence > 1 && parsedAmt > 0 && (
-              <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-3 py-2 text-xs text-emerald-300">
+              <div className="rounded-xl bg-[#e7f4eb] border border-[#b5e3c4] px-3 py-2 text-xs font-medium text-[#057b40]">
                 {locale === "sv"
                   ? `Motsvarar ${formatCurrency(
                       parsedAmt / recurrence,
@@ -305,12 +311,12 @@ export function ItemFormModal({
           </div>
 
           {/* Seasonal variable checkbox */}
-          <label className="flex items-center gap-2.5 text-xs text-slate-300 cursor-pointer">
+          <label className="flex items-center gap-2.5 text-xs font-medium text-[#282825] cursor-pointer">
             <input
               type="checkbox"
               checked={isVariable}
               onChange={(e) => setIsVariable(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
+              className="h-4 w-4 rounded border-[#282825] accent-[#057b40]"
             />
             <span>{t.itemForm.variableEstimate}</span>
           </label>
@@ -324,7 +330,7 @@ export function ItemFormModal({
                   await onDeleteItem(editingItem.id);
                   onClose();
                 }}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500/15 px-3.5 py-2.5 text-xs font-semibold text-rose-400 hover:bg-rose-500/25"
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#fdeeed] border border-[#eb5b55] px-4 py-2.5 text-xs font-semibold text-[#b81a14] hover:bg-[#fbc8c5]"
               >
                 <Trash2 className="h-4 w-4" />
                 {t.actions.delete}
@@ -337,14 +343,14 @@ export function ItemFormModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-xl bg-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-700"
+                className="rounded-full border border-[#282825] bg-white px-4 py-2.5 text-xs font-semibold text-[#282825] hover:bg-[#ecece9]"
               >
                 {t.actions.cancel}
               </button>
               <button
                 type="submit"
                 disabled={saving}
-                className="rounded-xl bg-emerald-500 px-5 py-2.5 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
+                className="rounded-full bg-[#0c0d0d] px-6 py-2.5 text-xs font-semibold text-white hover:bg-[#282825] disabled:opacity-50"
               >
                 {t.actions.save}
               </button>
@@ -376,7 +382,7 @@ export function GroupFormModal({
   const t = translations[locale];
   const [name, setName] = useState("");
   const [kind, setKind] = useState<BudgetGroupKind>("expense");
-  const [color, setColor] = useState("blue");
+  const [color] = useState("blue");
   const [saving, setSaving] = useState(false);
 
   if (!open) return null;
@@ -395,15 +401,23 @@ export function GroupFormModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 backdrop-blur-xs">
-      <div className="w-full max-w-lg rounded-t-3xl border-t border-slate-800 bg-[#111726] p-5 pb-8 shadow-2xl">
-        <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-700/80" />
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-[#282825]/45 backdrop-blur-xs"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-t-3xl border-t border-[#282825] bg-[#f4f4f2] p-5 pb-8 text-[#282825] shadow-sheet"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-[#c5c5ba]" />
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-bold text-white">{t.groupForm.titleNew}</h3>
+          <h3 className="font-serif text-2xl text-[#282825]">
+            {t.groupForm.titleNew}
+          </h3>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full bg-slate-800 p-2 text-slate-300"
+            className="rounded-full border border-[#c5c5ba] bg-white p-2 text-[#282825]"
           >
             <X className="h-4 w-4" />
           </button>
@@ -411,7 +425,7 @@ export function GroupFormModal({
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label className="block text-xs font-semibold text-[#282825] mb-1">
               {t.groupForm.name}
             </label>
             <input
@@ -424,12 +438,12 @@ export function GroupFormModal({
                   ? "t.ex. Fritid & Barn, Sommarstuga..."
                   : "e.g. Kids & Hobbies, Subscriptions..."
               }
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
+              className="w-full rounded-full border border-[#c5c5ba] bg-white px-4 py-2.5 text-sm text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1.5">
+            <label className="block text-xs font-semibold text-[#282825] mb-1.5">
               {t.groupForm.kind}
             </label>
             <div className="grid grid-cols-3 gap-2">
@@ -439,10 +453,10 @@ export function GroupFormModal({
                     key={k}
                     type="button"
                     onClick={() => setKind(k)}
-                    className={`rounded-xl border py-2.5 text-xs font-semibold transition ${
+                    className={`rounded-full border py-2.5 text-xs font-semibold transition ${
                       kind === k
-                        ? "border-emerald-500 bg-emerald-500/15 text-emerald-300"
-                        : "border-slate-800 bg-slate-900 text-slate-400"
+                        ? "border-[#282825] bg-[#e7f4eb] text-[#057b40]"
+                        : "border-[#c5c5ba] bg-white text-[#64645e]"
                     }`}
                   >
                     {t.groupForm[k]}
@@ -456,14 +470,14 @@ export function GroupFormModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl bg-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-300"
+              className="rounded-full border border-[#282825] bg-white px-4 py-2.5 text-xs font-semibold text-[#282825]"
             >
               {t.actions.cancel}
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="rounded-xl bg-emerald-500 px-5 py-2.5 text-xs font-bold text-slate-950"
+              className="rounded-full bg-[#0c0d0d] px-6 py-2.5 text-xs font-semibold text-white"
             >
               {t.actions.save}
             </button>

@@ -38,7 +38,6 @@ export function InsightsView({
 
   const expenseGroups = groups.filter((g) => g.kind === "expense");
 
-  // Non-monthly bills (quarterly, semi-annual, annual)
   const rareBills = computedItems.filter(
     (c) => c.item.recurrence_interval_months > 1
   );
@@ -48,7 +47,6 @@ export function InsightsView({
     0
   );
 
-  // Deviations on confirmed items
   const confirmedWithVariance = computedItems
     .filter(
       (c) =>
@@ -66,26 +64,30 @@ export function InsightsView({
     <div className="space-y-5 pb-28">
       {/* Header */}
       <div>
-        <h2 className="text-xl font-bold text-white">{t.insights.title}</h2>
-        <p className="text-xs text-slate-400 mt-0.5">{t.insights.subtitle}</p>
+        <h2 className="font-serif text-3xl text-[#282825]">
+          {t.insights.title}
+        </h2>
+        <p className="text-xs font-medium text-[#64645e] mt-0.5">
+          {t.insights.subtitle}
+        </p>
       </div>
 
       {/* Sinking Fund / Quarterly & Annual Buffer Card */}
-      <div className="rounded-3xl border border-emerald-500/25 bg-gradient-to-br from-emerald-950/50 via-slate-900 to-slate-900 p-4 shadow-lg">
+      <div className="rounded-3xl border border-[#282825] bg-[#e7f4eb] p-4.5 shadow-editorial">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-emerald-400">
+            <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#057b40]">
               <PiggyBank className="h-4 w-4" />
               {t.insights.upcomingRareBills}
             </div>
-            <p className="mt-1 text-xs text-slate-300">
+            <p className="mt-1 text-xs text-[#282825]">
               {t.insights.monthlyReserveTip}
             </p>
           </div>
           <div className="text-right">
-            <div className="text-lg font-extrabold text-emerald-400">
+            <div className="font-serif text-2xl text-[#282825]">
               {formatCurrency(totalMonthlyReserve, currency, locale)}
-              <span className="text-xs font-normal text-slate-400">
+              <span className="font-mono text-xs text-[#64645e]">
                 /{locale === "sv" ? "mån" : "mo"}
               </span>
             </div>
@@ -101,14 +103,14 @@ export function InsightsView({
               return (
                 <div
                   key={item.id}
-                  className="flex items-center justify-between rounded-2xl bg-slate-950/60 px-3.5 py-2.5 text-xs border border-slate-800/80"
+                  className="flex items-center justify-between rounded-2xl bg-white px-3.5 py-2.5 text-xs border border-[#b5e3c4]"
                 >
                   <div>
-                    <div className="font-semibold text-slate-100">
+                    <div className="font-semibold text-[#282825]">
                       {item.name}
                     </div>
-                    <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
-                      <CalendarClock className="h-3 w-3 text-emerald-400" />
+                    <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
+                      <CalendarClock className="h-3 w-3 text-[#057b40]" />
                       <span>
                         {getRecurrenceLabel(
                           item.recurrence_interval_months,
@@ -123,10 +125,10 @@ export function InsightsView({
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-bold text-slate-200">
+                    <div className="font-serif text-base text-[#282825]">
                       {formatCurrency(item.expected_amount, currency, locale)}
                     </div>
-                    <div className="text-[11px] text-emerald-400">
+                    <div className="font-mono text-[11px] font-bold text-[#057b40]">
                       {formatCurrency(perMonth, currency, locale)}/
                       {locale === "sv" ? "mån" : "mo"}
                     </div>
@@ -136,7 +138,7 @@ export function InsightsView({
             })}
           </div>
         ) : (
-          <p className="mt-3 text-xs text-slate-400">
+          <p className="mt-3 text-xs text-[#64645e]">
             {locale === "sv"
               ? "Inga kvartals- eller årsfakturor inlagda ännu."
               : "No quarterly or annual bills added yet."}
@@ -145,8 +147,8 @@ export function InsightsView({
       </div>
 
       {/* Variance by Expense Group */}
-      <div className="rounded-3xl border border-slate-800/90 bg-[#111726] p-4 space-y-4">
-        <h3 className="text-sm font-bold text-slate-200">
+      <div className="rounded-3xl border border-[#c5c5ba] bg-white p-4.5 space-y-4 shadow-editorial">
+        <h3 className="font-serif text-xl text-[#282825]">
           {t.insights.varianceByGroup}
         </h3>
 
@@ -166,26 +168,29 @@ export function InsightsView({
             const diff = effectiveTotal - expectedTotal;
             const pct =
               expectedTotal > 0
-                ? Math.min(100, Math.round((effectiveTotal / expectedTotal) * 100))
+                ? Math.min(
+                    100,
+                    Math.round((effectiveTotal / expectedTotal) * 100)
+                  )
                 : 0;
 
             return (
               <div key={group.id} className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold text-slate-200">
+                  <span className="font-semibold text-[#282825]">
                     {group.name}
                   </span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-slate-400">
+                  <div className="flex items-center gap-2 font-mono">
+                    <span className="text-[#64645e]">
                       {formatCurrency(effectiveTotal, currency, locale)} /{" "}
                       {formatCurrency(expectedTotal, currency, locale)}
                     </span>
                     {Math.round(diff) !== 0 && (
                       <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                        className={`rounded-full px-2 py-0.5 font-sans text-[10px] font-bold ${
                           diff < 0
-                            ? "bg-emerald-500/15 text-emerald-400"
-                            : "bg-amber-500/15 text-amber-400"
+                            ? "bg-[#e7f4eb] text-[#057b40]"
+                            : "bg-[#fdeee0] text-[#b85d10]"
                         }`}
                       >
                         {diff > 0 ? "+" : ""}
@@ -195,10 +200,10 @@ export function InsightsView({
                   </div>
                 </div>
 
-                <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
+                <div className="h-2.5 w-full overflow-hidden rounded-full bg-[#ecece9]">
                   <div
                     className={`h-full rounded-full transition-all ${
-                      diff > 0 ? "bg-amber-400" : "bg-emerald-500"
+                      diff > 0 ? "bg-[#f09236]" : "bg-[#529a6a]"
                     }`}
                     style={{ width: `${pct}%` }}
                   />
@@ -210,8 +215,8 @@ export function InsightsView({
       </div>
 
       {/* Largest Deviations This Month */}
-      <div className="rounded-3xl border border-slate-800/90 bg-[#111726] p-4">
-        <h3 className="text-sm font-bold text-slate-200 mb-3">
+      <div className="rounded-3xl border border-[#c5c5ba] bg-white p-4.5 shadow-editorial">
+        <h3 className="font-serif text-xl text-[#282825] mb-3">
           {t.insights.biggestDeviations}
         </h3>
 
@@ -223,14 +228,14 @@ export function InsightsView({
               return (
                 <div
                   key={c.item.id}
-                  className="flex items-center justify-between rounded-2xl bg-slate-900/80 px-3.5 py-2.5 text-xs border border-slate-800/70"
+                  className="flex items-center justify-between rounded-2xl bg-[#f8f8f7] px-3.5 py-2.5 text-xs border border-[#ecece9]"
                 >
                   <div className="flex items-center gap-2.5">
                     <div
-                      className={`rounded-xl p-2 ${
+                      className={`rounded-full p-2 ${
                         isCheaper
-                          ? "bg-emerald-500/15 text-emerald-400"
-                          : "bg-amber-500/15 text-amber-400"
+                          ? "bg-[#e7f4eb] text-[#057b40]"
+                          : "bg-[#fdeee0] text-[#b85d10]"
                       }`}
                     >
                       {isCheaper ? (
@@ -240,10 +245,10 @@ export function InsightsView({
                       )}
                     </div>
                     <div>
-                      <div className="font-semibold text-white">
+                      <div className="font-semibold text-[#282825]">
                         {c.item.name}
                       </div>
-                      <div className="text-[11px] text-slate-400">
+                      <div className="font-mono text-[11px] text-[#64645e]">
                         {t.summary.expected}:{" "}
                         {formatCurrency(c.displayedExpected, currency, locale)}{" "}
                         → {t.summary.actual}:{" "}
@@ -257,8 +262,10 @@ export function InsightsView({
                   </div>
 
                   <span
-                    className={`font-bold ${
-                      isCheaper ? "text-emerald-400" : "text-amber-400"
+                    className={`rounded-full px-2.5 py-1 font-bold ${
+                      isCheaper
+                        ? "bg-[#e7f4eb] text-[#057b40]"
+                        : "bg-[#fdeee0] text-[#b85d10]"
                     }`}
                   >
                     {diff > 0 ? "+" : ""}
@@ -269,8 +276,8 @@ export function InsightsView({
             })}
           </div>
         ) : (
-          <div className="flex items-center gap-2 rounded-2xl bg-slate-900/50 p-3.5 text-xs text-slate-400">
-            <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+          <div className="flex items-center gap-2 rounded-2xl bg-[#e7f4eb] p-3.5 text-xs font-medium text-[#057b40]">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>
               {locale === "sv"
                 ? "Alla bekräftade poster ligger exakt enligt förväntan hittills."

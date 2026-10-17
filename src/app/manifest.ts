@@ -8,8 +8,8 @@ export default function manifest(): MetadataRoute.Manifest {
       "Follow up your monthly private economy, recurring bills, and shared household budget.",
     start_url: "/",
     display: "standalone",
-    background_color: "#090d16",
-    theme_color: "#10b981",
+    background_color: "#f4f4f2",
+    theme_color: "#f4f4f2",
     orientation: "portrait",
     icons: [
       {

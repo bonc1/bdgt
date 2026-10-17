@@ -3,17 +3,31 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
+  --color-surface-neutral: #ffffff;
+  --color-surface-light: #f8f8f7;
+  --color-surface-primary: #f4f4f2;
+  --color-surface-dim: #ecece9;
+  --color-border-primary: #282825;
+  --color-border-secondary: #64645e;
+  --color-border-tertiary: #c5c5ba;
+  --color-content-primary: #282825;
+  --color-content-secondary: #64645e;
+  --color-content-tertiary: #8f8f89;
+  --color-brand-purple: #c455eb;
+  --color-brand-blue: #2173be;
+  --color-brand-coral: #eb5b55;
+  --color-brand-orange: #f09236;
+  --color-brand-green: #529a6a;
 }
 
 body {
-  background-color: #090d16;
-  color: #f8fafc;
+  background-color: var(--color-surface-primary);
+  color: var(--color-content-primary);
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: none;
+  text-rendering: optimizeLegibility;
 }
 
-/* Hide scrollbars on horizontal pill strips while keeping scrollability */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }

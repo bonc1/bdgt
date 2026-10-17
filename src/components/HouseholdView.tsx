@@ -187,29 +187,31 @@ export function HouseholdView({
   return (
     <div className="space-y-5 pb-28">
       <div>
-        <h2 className="text-xl font-bold text-white">{t.household.title}</h2>
-        <p className="text-xs text-slate-400 mt-0.5">
+        <h2 className="font-serif text-3xl text-[#282825]">
+          {t.household.title}
+        </h2>
+        <p className="text-xs font-medium text-[#64645e] mt-0.5">
           {t.household.sharedDesc}
         </p>
       </div>
 
       {/* Authentication & Cloud Sync Card */}
-      <div className="rounded-3xl border border-slate-800/90 bg-[#111726] p-4.5 space-y-4">
+      <div className="rounded-3xl border border-[#282825] bg-white p-5 space-y-4 shadow-editorial">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm font-bold text-white">
-            <Cloud className="h-4 w-4 text-emerald-400" />
+          <div className="flex items-center gap-2 font-serif text-xl text-[#282825]">
+            <Cloud className="h-4 w-4 text-[#057b40]" />
             <span>{t.household.authStatus}</span>
           </div>
           <span
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-0.5 text-[11px] font-bold border ${
               userEmail
-                ? "bg-emerald-500/15 text-emerald-400"
-                : "bg-amber-500/15 text-amber-300"
+                ? "bg-[#e7f4eb] text-[#057b40] border-[#b5e3c4]"
+                : "bg-[#fdeee0] text-[#b85d10] border-[#faca9e]"
             }`}
           >
             <span
               className={`h-1.5 w-1.5 rounded-full ${
-                userEmail ? "bg-emerald-400" : "bg-amber-400"
+                userEmail ? "bg-[#057b40]" : "bg-[#f09236]"
               }`}
             />
             {userEmail
@@ -223,19 +225,19 @@ export function HouseholdView({
         </div>
 
         {userEmail ? (
-          <div className="flex items-center justify-between rounded-2xl bg-slate-900/90 px-3.5 py-3 border border-slate-800">
+          <div className="flex items-center justify-between rounded-2xl bg-[#f8f8f7] px-4 py-3 border border-[#c5c5ba]">
             <div>
-              <div className="text-xs text-slate-400">
+              <div className="text-xs text-[#64645e]">
                 {locale === "sv" ? "Inloggad som" : "Signed in as"}
               </div>
-              <div className="text-sm font-semibold text-white">
+              <div className="font-mono text-xs font-bold text-[#282825]">
                 {userEmail}
               </div>
             </div>
             <button
               type="button"
               onClick={onSignOut}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-slate-800 px-3.5 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+              className="inline-flex items-center gap-1.5 rounded-full border border-[#282825] bg-white px-4 py-2 text-xs font-semibold text-[#282825] hover:bg-[#ecece9]"
             >
               <LogOut className="h-3.5 w-3.5" />
               {t.household.signOutBtn}
@@ -243,7 +245,7 @@ export function HouseholdView({
           </div>
         ) : (
           <div className="space-y-3">
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-[#64645e]">
               {t.household.signInSubtitle}
             </p>
 
@@ -252,18 +254,18 @@ export function HouseholdView({
               type="button"
               disabled={authLoading}
               onClick={handleGoogleLogin}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-700 bg-slate-900 py-2.5 px-4 text-xs font-bold text-white hover:bg-slate-800 transition"
+              className="flex w-full items-center justify-center gap-2 rounded-full border border-[#282825] bg-[#e1edfe] py-2.5 px-4 text-xs font-bold text-[#282825] hover:bg-[#b8d5ff] transition"
             >
-              <Sparkles className="h-4 w-4 text-emerald-400" />
+              <Sparkles className="h-4 w-4 text-[#2173be]" />
               {t.household.googleBtn}
             </button>
 
             <div className="relative flex py-1 items-center">
-              <div className="flex-grow border-t border-slate-800" />
-              <span className="shrink mx-3 text-[11px] text-slate-500">
+              <div className="flex-grow border-t border-[#ecece9]" />
+              <span className="shrink mx-3 text-[11px] text-[#8f8f89]">
                 {locale === "sv" ? "eller med e-post" : "or with email"}
               </span>
-              <div className="flex-grow border-t border-slate-800" />
+              <div className="flex-grow border-t border-[#ecece9]" />
             </div>
 
             <form onSubmit={handleEmailSignIn} className="space-y-2.5">
@@ -273,21 +275,21 @@ export function HouseholdView({
                 placeholder={t.household.emailPlaceholder}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-4 py-2.5 text-sm text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
               />
               <input
                 type="password"
                 placeholder={t.household.passwordPlaceholder}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-4 py-2.5 text-sm text-[#282825] placeholder:text-[#8f8f89] focus:border-[#282825] focus:outline-none"
               />
 
               <div className="grid grid-cols-2 gap-2 pt-1">
                 <button
                   type="submit"
                   disabled={authLoading}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-500 py-2.5 px-3 text-xs font-bold text-slate-950 hover:bg-emerald-400 disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-full bg-[#0c0d0d] py-2.5 px-3 text-xs font-semibold text-white hover:bg-[#282825] disabled:opacity-50"
                 >
                   <LogIn className="h-3.5 w-3.5" />
                   {t.household.signInBtn}
@@ -296,7 +298,7 @@ export function HouseholdView({
                   type="button"
                   disabled={authLoading}
                   onClick={handleEmailSignUp}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-slate-800 py-2.5 px-3 text-xs font-bold text-white hover:bg-slate-700 disabled:opacity-50"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-full border border-[#282825] bg-white py-2.5 px-3 text-xs font-semibold text-[#282825] hover:bg-[#ecece9] disabled:opacity-50"
                 >
                   <UserPlus className="h-3.5 w-3.5" />
                   {t.household.signUpBtn}
@@ -307,19 +309,19 @@ export function HouseholdView({
                 type="button"
                 disabled={authLoading}
                 onClick={handleMagicLink}
-                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950/80 py-2 text-xs font-medium text-slate-300 hover:bg-slate-900"
+                className="flex w-full items-center justify-center gap-1.5 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] py-2 text-xs font-semibold text-[#282825] hover:border-[#282825]"
               >
-                <Mail className="h-3.5 w-3.5 text-emerald-400" />
+                <Mail className="h-3.5 w-3.5 text-[#057b40]" />
                 {t.household.magicLinkBtn}
               </button>
             </form>
 
             {authMessage && (
               <div
-                className={`rounded-xl p-3 text-xs ${
+                className={`rounded-2xl p-3 text-xs font-medium border ${
                   authMessage.type === "error"
-                    ? "bg-rose-500/15 text-rose-300 border border-rose-500/30"
-                    : "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                    ? "bg-[#fdeeed] text-[#b81a14] border-[#eb5b55]"
+                    : "bg-[#e7f4eb] text-[#057b40] border-[#529a6a]"
                 }`}
               >
                 {authMessage.text}
@@ -329,14 +331,14 @@ export function HouseholdView({
         )}
 
         {/* Database Table Readiness Indicator */}
-        <div className="flex items-center justify-between rounded-2xl bg-slate-950/70 px-3.5 py-2.5 text-xs border border-slate-800/80">
-          <div className="flex items-center gap-2 text-slate-300">
-            <Database className="h-3.5 w-3.5 text-emerald-400" />
+        <div className="flex items-center justify-between rounded-2xl bg-[#f8f8f7] px-3.5 py-2.5 text-xs border border-[#ecece9]">
+          <div className="flex items-center gap-2 font-mono text-[#64645e]">
+            <Database className="h-3.5 w-3.5 text-[#057b40]" />
             <span>Supabase: ziopeltcopzvyyxsmvap</span>
           </div>
           <span
             className={`font-semibold ${
-              dbReady ? "text-emerald-400" : "text-amber-400"
+              dbReady ? "text-[#057b40]" : "text-[#b85d10]"
             }`}
           >
             {dbReady
@@ -351,9 +353,9 @@ export function HouseholdView({
       </div>
 
       {/* Shared Household & Invite Code */}
-      <div className="rounded-3xl border border-slate-800/90 bg-[#111726] p-4.5 space-y-4">
-        <div className="flex items-center gap-2 text-sm font-bold text-white">
-          <Users className="h-4 w-4 text-emerald-400" />
+      <div className="rounded-3xl border border-[#c5c5ba] bg-white p-5 space-y-4 shadow-editorial">
+        <div className="flex items-center gap-2 font-serif text-xl text-[#282825]">
+          <Users className="h-4 w-4 text-[#2173be]" />
           <span>{household.name}</span>
         </div>
 
@@ -363,35 +365,35 @@ export function HouseholdView({
             type="text"
             value={householdNameInput}
             onChange={(e) => setHouseholdNameInput(e.target.value)}
-            className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white"
+            className="flex-1 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-4 py-2 text-xs text-[#282825]"
           />
           <button
             type="button"
             onClick={() => onUpdateHouseholdName(householdNameInput)}
-            className="rounded-xl bg-slate-800 px-3.5 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+            className="rounded-full bg-[#0c0d0d] px-4 py-2 text-xs font-semibold text-white hover:bg-[#282825]"
           >
             {t.actions.save}
           </button>
         </div>
 
         {/* Invite code box */}
-        <div className="flex items-center justify-between rounded-2xl bg-slate-900 p-3.5 border border-slate-800">
+        <div className="flex items-center justify-between rounded-2xl bg-[#e7f4eb] p-3.5 border border-[#b5e3c4]">
           <div>
-            <div className="text-[11px] text-slate-400">
+            <div className="text-[11px] font-semibold text-[#057b40]">
               {t.household.inviteCode}
             </div>
-            <div className="mt-0.5 font-mono text-base font-extrabold tracking-widest text-emerald-400">
+            <div className="mt-0.5 font-mono text-base font-bold tracking-widest text-[#282825]">
               {household.invite_code}
             </div>
           </div>
           <button
             type="button"
             onClick={handleCopyInvite}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500/15 px-3.5 py-2 text-xs font-bold text-emerald-300 hover:bg-emerald-500/25"
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#282825] bg-white px-3.5 py-2 text-xs font-semibold text-[#282825] hover:bg-[#b5e3c4]"
           >
             {copiedCode ? (
               <>
-                <Check className="h-3.5 w-3.5" />
+                <Check className="h-3.5 w-3.5 text-[#057b40]" />
                 {t.household.copied}
               </>
             ) : (
@@ -405,7 +407,7 @@ export function HouseholdView({
 
         {/* Join another household */}
         <form onSubmit={handleJoinSubmit} className="space-y-2 pt-1">
-          <label className="block text-xs font-medium text-slate-400">
+          <label className="block text-xs font-semibold text-[#64645e]">
             {t.household.joinHousehold}
           </label>
           <div className="flex gap-2">
@@ -414,35 +416,35 @@ export function HouseholdView({
               placeholder={t.household.enterInviteCode}
               value={joinCodeInput}
               onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-              className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs font-mono uppercase text-white placeholder:font-sans placeholder:normal-case"
+              className="flex-1 rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-4 py-2 text-xs font-mono uppercase text-[#282825] placeholder:font-sans placeholder:normal-case"
             />
             <button
               type="submit"
-              className="rounded-xl bg-slate-800 px-4 py-2 text-xs font-bold text-white hover:bg-slate-700"
+              className="rounded-full border border-[#282825] bg-white px-5 py-2 text-xs font-semibold text-[#282825] hover:bg-[#ecece9]"
             >
               {t.household.joinBtn}
             </button>
           </div>
           {joinStatus && (
-            <p className="text-xs text-emerald-400">{joinStatus}</p>
+            <p className="text-xs font-medium text-[#057b40]">{joinStatus}</p>
           )}
         </form>
 
         {/* Members list */}
         {members.length > 0 && (
-          <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
-            <div className="text-xs font-medium text-slate-400">
+          <div className="pt-2 border-t border-[#ecece9] space-y-1.5">
+            <div className="text-xs font-semibold text-[#64645e]">
               {t.household.members} ({members.length})
             </div>
             {members.map((m) => (
               <div
                 key={m.id}
-                className="flex items-center justify-between rounded-xl bg-slate-950/60 px-3 py-2 text-xs"
+                className="flex items-center justify-between rounded-xl bg-[#f8f8f7] px-3 py-2 text-xs border border-[#ecece9]"
               >
-                <span className="text-slate-200">
+                <span className="font-mono text-[#282825]">
                   {m.member_email || m.user_id.slice(0, 8)}
                 </span>
-                <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[10px] uppercase text-slate-400">
+                <span className="rounded-full bg-[#e1edfe] px-2.5 py-0.5 text-[10px] font-bold uppercase text-[#2173be]">
                   {m.role}
                 </span>
               </div>
@@ -452,20 +454,20 @@ export function HouseholdView({
       </div>
 
       {/* Language & Currency Preferences */}
-      <div className="rounded-3xl border border-slate-800/90 bg-[#111726] p-4.5 space-y-4">
+      <div className="rounded-3xl border border-[#c5c5ba] bg-white p-5 space-y-4 shadow-editorial">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-            <Globe className="h-4 w-4 text-emerald-400" />
+          <div className="flex items-center gap-2 text-xs font-semibold text-[#282825]">
+            <Globe className="h-4 w-4 text-[#057b40]" />
             <span>{t.household.language}</span>
           </div>
-          <div className="inline-flex rounded-xl bg-slate-900 p-1 border border-slate-800">
+          <div className="inline-flex rounded-full bg-[#ecece9] p-1 border border-[#c5c5ba]">
             <button
               type="button"
               onClick={() => onChangeLocale("sv")}
-              className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+              className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
                 locale === "sv"
-                  ? "bg-emerald-500 text-slate-950"
-                  : "text-slate-400 hover:text-white"
+                  ? "bg-[#0c0d0d] text-white"
+                  : "text-[#64645e] hover:text-[#282825]"
               }`}
             >
               Svenska
@@ -473,10 +475,10 @@ export function HouseholdView({
             <button
               type="button"
               onClick={() => onChangeLocale("en")}
-              className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+              className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
                 locale === "en"
-                  ? "bg-emerald-500 text-slate-950"
-                  : "text-slate-400 hover:text-white"
+                  ? "bg-[#0c0d0d] text-white"
+                  : "text-[#64645e] hover:text-[#282825]"
               }`}
             >
               English
@@ -484,9 +486,9 @@ export function HouseholdView({
           </div>
         </div>
 
-        <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-            <Coins className="h-4 w-4 text-emerald-400" />
+        <div className="flex items-center justify-between pt-3 border-t border-[#ecece9]">
+          <div className="flex items-center gap-2 text-xs font-semibold text-[#282825]">
+            <Coins className="h-4 w-4 text-[#f09236]" />
             <span>{t.household.currency}</span>
           </div>
           <div className="flex gap-1.5">
@@ -495,10 +497,10 @@ export function HouseholdView({
                 key={cur}
                 type="button"
                 onClick={() => onChangeCurrency(cur)}
-                className={`rounded-lg px-2.5 py-1.5 text-xs font-bold transition ${
+                className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
                   currency === cur
-                    ? "bg-emerald-500 text-slate-950"
-                    : "bg-slate-900 text-slate-400 border border-slate-800"
+                    ? "bg-[#0c0d0d] text-white"
+                    : "bg-[#f8f8f7] text-[#64645e] border border-[#c5c5ba]"
                 }`}
               >
                 {cur}

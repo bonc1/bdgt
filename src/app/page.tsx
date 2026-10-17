@@ -11,7 +11,6 @@ import {
   Wallet,
   BarChart3,
   Users,
-  Sparkles,
   CalendarClock,
   Layers,
   ArrowUpRight,
@@ -48,13 +47,72 @@ import { createClient } from "@/lib/supabase/client";
 
 const STORAGE_KEY = "bdgt_local_state_v1";
 
+/** Ellipsus-inspired hand-drawn brush underline SVG */
+function BrushUnderline({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      fill="none"
+      preserveAspectRatio="none"
+      viewBox="0 0 145 11"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        fill="currentColor"
+        d="M30.418 2.112C65.525-.07 100.524.386 135.466 3.902c.058-.332.116-.655.173-.986-1.485-.402-2.971-.788-4.449-1.222-1.337-.394-2.658-.859-3.83-1.694 4.391.158 8.907-.055 12.506 4.161-1.395.41-2.493 1.049-3.541.986-6.332-.379-12.655-.899-18.97-1.403-4.391-.347-8.774-.97-13.174-1.08-15.56-.402-31.12-.749-46.688-.89-8.47-.08-16.947.299-25.424.456-.553.008-1.098-.07-1.651-.11zm40.926 4.463c1.956 0 3.913-.015 5.86 0 5.498.056 10.988.095 16.485.205 9.328.182 18.664.316 27.992.647 7 .244 14 .725 20.983 1.198.809.055 1.56.772 2.336 1.182-.041.284-.083.56-.116.835-1.221.118-2.484.481-3.665.315-2.905-.402-5.761-1.316-8.675-1.544C113.162 7.915 93.731 7.537 74.291 7.6c-.999 0-1.998-.095-2.988-.15l.05-.89z"
+      />
+    </svg>
+  );
+}
+
+function getGroupHighlighter(group: BudgetGroup, idx: number) {
+  if (group.kind === "income") {
+    return {
+      headerBg: "bg-[#e7f4eb]",
+      badgeBg: "bg-[#b5e3c4]",
+      accentText: "text-[#057b40]",
+      dot: "bg-[#529a6a]",
+    };
+  }
+  if (group.kind === "savings") {
+    return {
+      headerBg: "bg-[#f6e6fc]",
+      badgeBg: "bg-[#edc6fb]",
+      accentText: "text-[#7a2899]",
+      dot: "bg-[#c455eb]",
+    };
+  }
+  const palettes = [
+    {
+      headerBg: "bg-[#e1edfe]",
+      badgeBg: "bg-[#b8d5ff]",
+      accentText: "text-[#2173be]",
+      dot: "bg-[#2173be]",
+    },
+    {
+      headerBg: "bg-[#fdeee0]",
+      badgeBg: "bg-[#faca9e]",
+      accentText: "text-[#b85d10]",
+      dot: "bg-[#f09236]",
+    },
+    {
+      headerBg: "bg-[#fdeeed]",
+      badgeBg: "bg-[#fbc8c5]",
+      accentText: "text-[#b81a14]",
+      dot: "bg-[#eb5b55]",
+    },
+  ];
+  return palettes[idx % palettes.length];
+}
+
 export default function BudgetAppPage() {
   const supabase = useMemo(() => createClient(), []);
 
   const [locale, setLocale] = useState<Locale>("sv");
-  const [activeTab, setActiveTab] = useState<"budget" | "insights" | "household">(
-    "budget"
-  );
+  const [activeTab, setActiveTab] = useState<
+    "budget" | "insights" | "household"
+  >("budget");
   const [yearMonth, setYearMonth] = useState<string>(() =>
     getCurrentYearMonth()
   );
@@ -133,14 +191,12 @@ export default function BudgetAppPage() {
   // 2. Load from Supabase when authenticated
   const loadCloudData = useCallback(
     async (uid: string, email: string | null) => {
-      // Check if households table exists
       const { data: memberRows, error: memberErr } = await supabase
         .from("household_members")
         .select("household_id, role, member_email, id, user_id")
         .eq("user_id", uid);
 
       if (memberErr) {
-        // Table not migrated yet
         setDbReady(false);
         return;
       }
@@ -148,7 +204,6 @@ export default function BudgetAppPage() {
 
       let activeHouseholdId = memberRows?.[0]?.household_id;
 
-      // If user has no household yet, seed one with starter templates!
       if (!activeHouseholdId) {
         const starter = createStarterDataset("temp", locale);
         const { data: newHh, error: hhErr } = await supabase
@@ -172,7 +227,6 @@ export default function BudgetAppPage() {
           role: "owner",
         });
 
-        // Insert starter groups
         const groupInsertPayload = starter.groups.map((g) => ({
           household_id: activeHouseholdId,
           name: g.name,
@@ -211,7 +265,6 @@ export default function BudgetAppPage() {
         }
       }
 
-      // Fetch household, members, groups, items, records, transactions
       const [hhRes, memRes, grpRes, itmRes, recRes, txRes] = await Promise.all([
         supabase
           .from("households")
@@ -272,7 +325,6 @@ export default function BudgetAppPage() {
     [supabase, locale]
   );
 
-  // Check auth session & probe table readiness
   useEffect(() => {
     let mounted = true;
     async function initAuth() {
@@ -280,7 +332,6 @@ export default function BudgetAppPage() {
         data: { session },
       } = await supabase.auth.getSession();
 
-      // Quick table readiness check
       const { error: probeError } = await supabase
         .from("households")
         .select("id")
@@ -316,7 +367,6 @@ export default function BudgetAppPage() {
     };
   }, [supabase, loadCloudData]);
 
-  // Computed monthly items
   const computedItems = useMemo(
     () =>
       computeMonthlyBudget(
@@ -335,7 +385,6 @@ export default function BudgetAppPage() {
     [computedItems, selectedItemId]
   );
 
-  // Summary metrics
   const summary = useMemo(() => {
     let expectedIncome = 0;
     let effectiveIncome = 0;
@@ -384,7 +433,6 @@ export default function BudgetAppPage() {
     };
   }, [computedItems]);
 
-  // Handlers for confirming bills, logging transactions, and CRUD
   const handleConfirmActual = async (
     itemId: string,
     actualAmount: number,
@@ -435,7 +483,6 @@ export default function BudgetAppPage() {
       }
     }
 
-    // Local update
     const updatedRecord: MonthlyRecord = {
       id: existingRec?.id || `rec-${Date.now()}`,
       household_id: household.id,
@@ -526,10 +573,7 @@ export default function BudgetAppPage() {
           .single();
 
         if (newTx) {
-          const updatedTxs = [
-            newTx,
-            ...(existingRec.transactions || []),
-          ];
+          const updatedTxs = [newTx, ...(existingRec.transactions || [])];
           const updatedRec: MonthlyRecord = {
             ...existingRec,
             transactions: updatedTxs,
@@ -543,7 +587,6 @@ export default function BudgetAppPage() {
       }
     }
 
-    // Local update
     const recId = existingRec?.id || `rec-${Date.now()}`;
     const newTx = {
       id: `tx-${Date.now()}`,
@@ -716,30 +759,30 @@ export default function BudgetAppPage() {
   };
 
   return (
-    <div className="mx-auto min-h-screen max-w-lg bg-[#090d16] px-4 pt-4">
-      {/* Top App Bar */}
-      <header className="flex items-center justify-between pb-3">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-emerald-600 text-slate-950 font-black text-lg shadow-md shadow-emerald-500/20">
-            b
+    <div className="mx-auto min-h-screen max-w-lg bg-[#f4f4f2] px-4 pt-5 text-[#282825]">
+      {/* Top Editorial Masthead */}
+      <header className="flex items-center justify-between pb-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#282825] bg-[#ffffff] font-serif text-2xl italic text-[#282825] shadow-xs">
+            b.
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-base font-extrabold tracking-tight text-white">
+              <h1 className="font-serif text-2xl tracking-tight text-[#282825] leading-none">
                 {household.name}
               </h1>
               <span
-                className={`h-2 w-2 rounded-full ${
-                  userId && dbReady ? "bg-emerald-400" : "bg-amber-400"
+                className={`inline-block h-2 w-2 rounded-full ${
+                  userId && dbReady ? "bg-[#529a6a]" : "bg-[#f09236]"
                 }`}
                 title={
-                  userId && dbReady
-                    ? "Cloud Synced"
-                    : "Local Preview Mode"
+                  userId && dbReady ? "Cloud Synced" : "Local Preview Mode"
                 }
               />
             </div>
-            <p className="text-[11px] text-slate-400">{t.tagline}</p>
+            <p className="mt-0.5 text-[11px] font-medium text-[#64645e]">
+              {t.tagline}
+            </p>
           </div>
         </div>
 
@@ -748,9 +791,9 @@ export default function BudgetAppPage() {
           <button
             type="button"
             onClick={() => setLocale((l) => (l === "sv" ? "en" : "sv"))}
-            className="rounded-xl border border-slate-800 bg-slate-900/90 px-2.5 py-1.5 text-xs font-bold text-slate-300 hover:text-white"
+            className="rounded-full border border-[#c5c5ba] bg-white px-3 py-1.5 text-xs font-semibold text-[#282825] hover:border-[#282825] transition"
           >
-            {locale === "sv" ? "🇸🇪 SV" : "🇬🇧 EN"}
+            {locale === "sv" ? "SV" : "EN"}
           </button>
           <button
             type="button"
@@ -759,7 +802,7 @@ export default function BudgetAppPage() {
               setDefaultGroupIdForNew(groups[0]?.id);
               setItemModalOpen(true);
             }}
-            className="inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-1.5 text-xs font-bold text-slate-950 shadow-sm hover:bg-emerald-400"
+            className="inline-flex items-center gap-1 rounded-full bg-[#0c0d0d] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#282825] transition"
           >
             <Plus className="h-3.5 w-3.5" />
             <span>{locale === "sv" ? "Post" : "Item"}</span>
@@ -767,19 +810,19 @@ export default function BudgetAppPage() {
         </div>
       </header>
 
-      {/* Month Selector Strip (Shown on Budget & Insights tabs) */}
+      {/* Editorial Month Selector Strip */}
       {activeTab !== "household" && (
-        <div className="mb-3 flex items-center justify-between rounded-2xl border border-slate-800/80 bg-[#111726] px-3 py-2">
+        <div className="mb-3 flex items-center justify-between rounded-full border border-[#282825] bg-white px-2.5 py-1.5 shadow-editorial">
           <button
             type="button"
             onClick={() => setYearMonth((ym) => shiftYearMonth(ym, -1))}
-            className="rounded-xl p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white"
+            className="rounded-full p-1.5 text-[#282825] hover:bg-[#ecece9] transition"
           >
-            <ChevronLeft className="h-5 w-5" />
+            <ChevronLeft className="h-4 w-4" />
           </button>
 
           <div className="text-center">
-            <div className="text-sm font-bold text-white">
+            <div className="font-serif text-xl tracking-wide text-[#282825]">
               {formatYearMonthLabel(yearMonth, locale)}
             </div>
           </div>
@@ -787,9 +830,9 @@ export default function BudgetAppPage() {
           <button
             type="button"
             onClick={() => setYearMonth((ym) => shiftYearMonth(ym, 1))}
-            className="rounded-xl p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white"
+            className="rounded-full p-1.5 text-[#282825] hover:bg-[#ecece9] transition"
           >
-            <ChevronRight className="h-5 w-5" />
+            <ChevronRight className="h-4 w-4" />
           </button>
         </div>
       )}
@@ -798,14 +841,14 @@ export default function BudgetAppPage() {
       {activeTab === "budget" && (
         <main className="space-y-4 pb-28">
           {/* View Mode Toggle: Payment Month vs Monthly Average (Buffer) */}
-          <div className="grid grid-cols-2 gap-1.5 rounded-2xl bg-[#111726] p-1 border border-slate-800/90">
+          <div className="grid grid-cols-2 gap-1.5 rounded-full bg-[#ecece9] p-1 border border-[#c5c5ba]">
             <button
               type="button"
               onClick={() => setViewMode("cashflow")}
-              className={`rounded-xl py-2 px-3 text-xs font-bold transition ${
+              className={`rounded-full py-2 px-3 text-xs font-semibold transition ${
                 viewMode === "cashflow"
-                  ? "bg-emerald-500 text-slate-950 shadow-xs"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-[#0c0d0d] text-white shadow-xs"
+                  : "text-[#64645e] hover:text-[#282825]"
               }`}
             >
               {t.viewMode.cashflow}
@@ -813,37 +856,40 @@ export default function BudgetAppPage() {
             <button
               type="button"
               onClick={() => setViewMode("accrual")}
-              className={`rounded-xl py-2 px-3 text-xs font-bold transition ${
+              className={`rounded-full py-2 px-3 text-xs font-semibold transition ${
                 viewMode === "accrual"
-                  ? "bg-emerald-500 text-slate-950 shadow-xs"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-[#0c0d0d] text-white shadow-xs"
+                  : "text-[#64645e] hover:text-[#282825]"
               }`}
             >
               {t.viewMode.accrual}
             </button>
           </div>
 
-          {/* Hero Overview Card */}
-          <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-[#131c31] via-[#111726] to-[#0d1320] p-4.5 shadow-xl">
-            <div className="flex items-start justify-between">
+          {/* Editorial Hero Card */}
+          <div className="rounded-3xl border border-[#282825] bg-white p-5 shadow-editorial">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <span className="text-xs font-medium text-slate-400">
+                <span className="text-xs font-semibold uppercase tracking-wider text-[#64645e]">
                   {t.summary.leftToSpend}
                 </span>
-                <div
-                  className={`mt-0.5 text-3xl font-black tracking-tight ${
-                    summary.leftToSpend >= 0
-                      ? "text-emerald-400"
-                      : "text-rose-400"
-                  }`}
-                >
-                  {formatCurrency(
-                    summary.leftToSpend,
-                    household.currency,
-                    locale
-                  )}
+                <div className="relative inline-block mt-0.5">
+                  <div
+                    className={`font-serif text-4xl leading-none tracking-tight ${
+                      summary.leftToSpend >= 0
+                        ? "text-[#282825]"
+                        : "text-[#b81a14]"
+                    }`}
+                  >
+                    {formatCurrency(
+                      summary.leftToSpend,
+                      household.currency,
+                      locale
+                    )}
+                  </div>
+                  <BrushUnderline className="mt-1 h-2 w-full text-[#529a6a]" />
                 </div>
-                <div className="mt-0.5 text-[11px] text-slate-400">
+                <div className="mt-1 font-mono text-[11px] text-[#64645e]">
                   {t.summary.expected}:{" "}
                   {formatCurrency(
                     summary.expectedLeft,
@@ -853,18 +899,18 @@ export default function BudgetAppPage() {
                 </div>
               </div>
 
-              {/* Confirmed Bills Pill */}
-              <div className="rounded-2xl bg-slate-900/90 border border-slate-800 px-3 py-2 text-right">
-                <div className="text-[11px] text-slate-400">
+              {/* Confirmed Bills Highlighter Box */}
+              <div className="rounded-2xl border border-[#282825]/20 bg-[#e7f4eb] px-3.5 py-2.5 text-right">
+                <div className="text-[11px] font-semibold text-[#057b40]">
                   {t.summary.confirmedProgress}
                 </div>
-                <div className="mt-0.5 text-sm font-extrabold text-white">
+                <div className="mt-0.5 font-serif text-xl text-[#282825]">
                   {summary.confirmedCount} {t.summary.of}{" "}
                   {summary.dueItemsCount} {t.summary.done}
                 </div>
-                <div className="mt-1.5 h-1.5 w-24 overflow-hidden rounded-full bg-slate-800">
+                <div className="mt-1.5 h-1.5 w-24 overflow-hidden rounded-full bg-white/80 border border-[#057b40]/20">
                   <div
-                    className="h-full rounded-full bg-emerald-400 transition-all"
+                    className="h-full rounded-full bg-[#529a6a] transition-all"
                     style={{
                       width: `${
                         summary.dueItemsCount > 0
@@ -880,14 +926,14 @@ export default function BudgetAppPage() {
               </div>
             </div>
 
-            {/* 3 Summary Pillars: Income, Expenses, Savings */}
-            <div className="mt-4 grid grid-cols-3 gap-2 pt-3.5 border-t border-slate-800/80">
-              <div className="rounded-2xl bg-slate-950/50 p-2.5">
-                <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                  <ArrowUpRight className="h-3.5 w-3.5 text-emerald-400" />
+            {/* 3 Highlighter Summary Pillars: Income, Expenses, Savings */}
+            <div className="mt-4 grid grid-cols-3 gap-2 pt-3.5 border-t border-[#ecece9]">
+              <div className="rounded-2xl bg-[#e7f4eb] p-2.5 border border-[#b5e3c4]">
+                <div className="flex items-center gap-1 text-[11px] font-semibold text-[#057b40]">
+                  <ArrowUpRight className="h-3.5 w-3.5" />
                   <span>{t.summary.income}</span>
                 </div>
-                <div className="mt-1 text-sm font-bold text-white">
+                <div className="mt-1 font-serif text-lg text-[#282825] leading-tight">
                   {formatCurrency(
                     summary.effectiveIncome,
                     household.currency,
@@ -896,12 +942,12 @@ export default function BudgetAppPage() {
                 </div>
               </div>
 
-              <div className="rounded-2xl bg-slate-950/50 p-2.5">
-                <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                  <ArrowDownRight className="h-3.5 w-3.5 text-rose-400" />
+              <div className="rounded-2xl bg-[#fdeee0] p-2.5 border border-[#faca9e]">
+                <div className="flex items-center gap-1 text-[11px] font-semibold text-[#b85d10]">
+                  <ArrowDownRight className="h-3.5 w-3.5" />
                   <span>{t.summary.expenses}</span>
                 </div>
-                <div className="mt-1 text-sm font-bold text-white">
+                <div className="mt-1 font-serif text-lg text-[#282825] leading-tight">
                   {formatCurrency(
                     summary.effectiveExpense,
                     household.currency,
@@ -910,12 +956,12 @@ export default function BudgetAppPage() {
                 </div>
               </div>
 
-              <div className="rounded-2xl bg-slate-950/50 p-2.5">
-                <div className="flex items-center gap-1 text-[11px] text-slate-400">
-                  <PiggyBank className="h-3.5 w-3.5 text-teal-400" />
+              <div className="rounded-2xl bg-[#f6e6fc] p-2.5 border border-[#edc6fb]">
+                <div className="flex items-center gap-1 text-[11px] font-semibold text-[#7a2899]">
+                  <PiggyBank className="h-3.5 w-3.5" />
                   <span>{t.summary.savings}</span>
                 </div>
-                <div className="mt-1 text-sm font-bold text-white">
+                <div className="mt-1 font-serif text-lg text-[#282825] leading-tight">
                   {formatCurrency(
                     summary.effectiveSavings,
                     household.currency,
@@ -928,7 +974,7 @@ export default function BudgetAppPage() {
 
           {/* Groups & Budget Items List */}
           <div className="space-y-4">
-            {groups.map((group) => {
+            {groups.map((group, idx) => {
               const groupItems = computedItems.filter(
                 (c) => c.group.id === group.id
               );
@@ -940,39 +986,36 @@ export default function BudgetAppPage() {
                 (s, c) => s + c.effectiveAmount,
                 0
               );
+              const hl = getGroupHighlighter(group, idx);
 
               return (
                 <section
                   key={group.id}
-                  className="rounded-3xl border border-slate-800/90 bg-[#111726] overflow-hidden shadow-md"
+                  className="rounded-3xl border border-[#c5c5ba] bg-white overflow-hidden shadow-editorial"
                 >
-                  {/* Group Header */}
-                  <div className="flex items-center justify-between border-b border-slate-800/70 bg-slate-900/50 px-4 py-3">
+                  {/* Group Highlighter Header */}
+                  <div
+                    className={`flex items-center justify-between border-b border-[#c5c5ba]/70 ${hl.headerBg} px-4 py-3`}
+                  >
                     <div className="flex items-center gap-2">
                       <span
-                        className={`h-2.5 w-2.5 rounded-full ${
-                          group.kind === "income"
-                            ? "bg-emerald-400"
-                            : group.kind === "savings"
-                            ? "bg-teal-400"
-                            : "bg-blue-400"
-                        }`}
+                        className={`h-2.5 w-2.5 rounded-full ${hl.dot}`}
                       />
-                      <h2 className="text-sm font-bold text-white">
+                      <h2 className="font-serif text-lg tracking-wide text-[#282825]">
                         {group.name}
                       </h2>
                     </div>
 
                     <div className="flex items-center gap-2.5">
-                      <div className="text-right text-xs">
-                        <span className="font-bold text-slate-100">
+                      <div className="text-right font-mono text-xs">
+                        <span className="font-bold text-[#282825]">
                           {formatCurrency(
                             groupEffective,
                             household.currency,
                             locale
                           )}
                         </span>
-                        <span className="text-slate-500">
+                        <span className="text-[#64645e]">
                           {" "}
                           /{" "}
                           {formatCurrency(
@@ -990,7 +1033,7 @@ export default function BudgetAppPage() {
                           setDefaultGroupIdForNew(group.id);
                           setItemModalOpen(true);
                         }}
-                        className="rounded-lg bg-slate-800 p-1 text-slate-300 hover:bg-slate-700 hover:text-white"
+                        className="rounded-full border border-[#282825]/30 bg-white/80 p-1 text-[#282825] hover:bg-white transition"
                         title={t.actions.addItem}
                       >
                         <Plus className="h-3.5 w-3.5" />
@@ -999,7 +1042,7 @@ export default function BudgetAppPage() {
                   </div>
 
                   {/* Items inside group */}
-                  <div className="divide-y divide-slate-800/60">
+                  <div className="divide-y divide-[#ecece9]">
                     {groupItems.map((c) => {
                       const {
                         item,
@@ -1020,7 +1063,7 @@ export default function BudgetAppPage() {
                           key={item.id}
                           type="button"
                           onClick={() => setSelectedItemId(item.id)}
-                          className={`flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-slate-800/40 active:bg-slate-800/70 ${
+                          className={`flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition hover:bg-[#f8f8f7] active:bg-[#ecece9] ${
                             !isPaymentMonth && viewMode === "cashflow"
                               ? "opacity-55"
                               : ""
@@ -1029,23 +1072,23 @@ export default function BudgetAppPage() {
                           <div className="flex items-start gap-3 min-w-0">
                             <div className="mt-0.5 shrink-0">
                               {isConfirmed ? (
-                                <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+                                <CheckCircle2 className="h-5 w-5 text-[#057b40]" />
                               ) : hasPartialTx ? (
-                                <Layers className="h-5 w-5 text-amber-400" />
+                                <Layers className="h-5 w-5 text-[#f09236]" />
                               ) : (
-                                <Circle className="h-5 w-5 text-slate-600" />
+                                <Circle className="h-5 w-5 text-[#c5c5ba]" />
                               )}
                             </div>
 
                             <div className="min-w-0">
-                              <div className="truncate text-sm font-semibold text-slate-100">
+                              <div className="truncate text-sm font-semibold text-[#282825]">
                                 {item.name}
                               </div>
-                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
-                                <CalendarClock className="h-3 w-3 shrink-0 text-slate-500" />
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#64645e]">
+                                <CalendarClock className="h-3 w-3 shrink-0 text-[#8f8f89]" />
                                 <span>{coverageLabel}</span>
                                 {record?.notes && (
-                                  <span className="rounded bg-slate-800 px-1.5 py-0.2 text-[10px] text-slate-300">
+                                  <span className="rounded-full bg-[#ffe81a]/60 px-2 py-0.2 font-sans text-[10px] font-medium text-[#282825]">
                                     {record.notes}
                                   </span>
                                 )}
@@ -1057,15 +1100,15 @@ export default function BudgetAppPage() {
                           <div className="shrink-0 text-right">
                             {displayedActual !== null ? (
                               <>
-                                <div className="text-sm font-extrabold text-white">
+                                <div className="font-serif text-lg leading-tight text-[#282825]">
                                   {formatCurrency(
                                     displayedActual,
                                     household.currency,
                                     locale
                                   )}
                                 </div>
-                                <div className="flex items-center justify-end gap-1 text-[11px]">
-                                  <span className="text-slate-500 line-through">
+                                <div className="flex items-center justify-end gap-1 font-mono text-[11px]">
+                                  <span className="text-[#8f8f89] line-through">
                                     {formatCurrency(
                                       displayedExpected,
                                       household.currency,
@@ -1075,40 +1118,39 @@ export default function BudgetAppPage() {
                                   {variance !== null &&
                                     Math.round(variance) !== 0 && (
                                       <span
-                                        className={`font-bold ${
+                                        className={`rounded-full px-1.5 py-0.2 font-sans text-[10px] font-bold ${
                                           variance < 0
-                                            ? "text-emerald-400"
-                                            : "text-amber-400"
+                                            ? "bg-[#e7f4eb] text-[#057b40]"
+                                            : "bg-[#fdeee0] text-[#b85d10]"
                                         }`}
                                       >
-                                        ({variance > 0 ? "+" : ""}
+                                        {variance > 0 ? "+" : ""}
                                         {formatCurrency(
                                           variance,
                                           household.currency,
                                           locale
                                         )}
-                                        )
                                       </span>
                                     )}
                                 </div>
                               </>
                             ) : (
                               <>
-                                <div className="text-sm font-bold text-slate-200">
+                                <div className="font-serif text-lg leading-tight text-[#282825]">
                                   {formatCurrency(
                                     displayedExpected,
                                     household.currency,
                                     locale
                                   )}
                                 </div>
-                                <div className="text-[11px] text-emerald-400/90 font-medium">
+                                <div className="text-[11px] font-medium text-[#057b40]">
                                   {!isPaymentMonth && viewMode === "cashflow"
                                     ? t.status.offMonth
                                     : !isPaymentMonth && viewMode === "accrual"
                                     ? t.status.offMonthAccrual
                                     : locale === "sv"
-                                    ? "Tryck för utfall"
-                                    : "Tap to confirm"}
+                                    ? "Tryck för utfall →"
+                                    : "Tap to confirm →"}
                                 </div>
                               </>
                             )}
@@ -1122,7 +1164,7 @@ export default function BudgetAppPage() {
             })}
           </div>
 
-          {/* Add Group / Add Item bottom buttons */}
+          {/* Add Group / Add Item bottom pill buttons */}
           <div className="grid grid-cols-2 gap-2.5 pt-1">
             <button
               type="button"
@@ -1131,7 +1173,7 @@ export default function BudgetAppPage() {
                 setDefaultGroupIdForNew(groups[0]?.id);
                 setItemModalOpen(true);
               }}
-              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-800 bg-[#111726] py-3 text-xs font-bold text-emerald-400 hover:bg-slate-900"
+              className="flex items-center justify-center gap-2 rounded-full bg-[#0c0d0d] py-3 text-xs font-semibold text-white hover:bg-[#282825] transition"
             >
               <Plus className="h-4 w-4" />
               {t.actions.addItem}
@@ -1139,7 +1181,7 @@ export default function BudgetAppPage() {
             <button
               type="button"
               onClick={() => setGroupModalOpen(true)}
-              className="flex items-center justify-center gap-2 rounded-2xl border border-slate-800 bg-[#111726] py-3 text-xs font-bold text-slate-300 hover:bg-slate-900"
+              className="flex items-center justify-center gap-2 rounded-full border border-[#282825] bg-white py-3 text-xs font-semibold text-[#282825] hover:bg-[#ecece9] transition"
             >
               <FolderPlus className="h-4 w-4" />
               {t.actions.addGroup}
@@ -1176,7 +1218,7 @@ export default function BudgetAppPage() {
         />
       )}
 
-      {/* Follow-Up Bottom Sheet (when tapping a bill/budget item) */}
+      {/* Follow-Up Bottom Sheet */}
       <FollowUpSheet
         computed={selectedComputed}
         yearMonth={yearMonth}
@@ -1218,45 +1260,45 @@ export default function BudgetAppPage() {
         onSaveGroup={handleSaveGroup}
       />
 
-      {/* Mobile Bottom Navigation Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-800/90 bg-[#090d16]/95 backdrop-blur-md">
+      {/* Ellipsus-styled Mobile Bottom Navigation Bar */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-[#c5c5ba] bg-[#f4f4f2]/95 backdrop-blur-md">
         <div className="mx-auto flex max-w-lg items-center justify-around py-2 px-4">
           <button
             type="button"
             onClick={() => setActiveTab("budget")}
-            className={`flex flex-col items-center gap-1 rounded-2xl px-5 py-1.5 text-xs font-bold transition ${
+            className={`flex flex-col items-center gap-0.5 rounded-full px-5 py-1.5 text-xs font-semibold transition ${
               activeTab === "budget"
-                ? "text-emerald-400"
-                : "text-slate-400 hover:text-slate-200"
+                ? "bg-[#e7f4eb] text-[#057b40] border border-[#282825]"
+                : "text-[#64645e] hover:text-[#282825]"
             }`}
           >
-            <Wallet className="h-5 w-5" />
+            <Wallet className="h-4 w-4" />
             <span>{t.nav.budget}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab("insights")}
-            className={`flex flex-col items-center gap-1 rounded-2xl px-5 py-1.5 text-xs font-bold transition ${
+            className={`flex flex-col items-center gap-0.5 rounded-full px-5 py-1.5 text-xs font-semibold transition ${
               activeTab === "insights"
-                ? "text-emerald-400"
-                : "text-slate-400 hover:text-slate-200"
+                ? "bg-[#fdeee0] text-[#b85d10] border border-[#282825]"
+                : "text-[#64645e] hover:text-[#282825]"
             }`}
           >
-            <BarChart3 className="h-5 w-5" />
+            <BarChart3 className="h-4 w-4" />
             <span>{t.nav.insights}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab("household")}
-            className={`flex flex-col items-center gap-1 rounded-2xl px-5 py-1.5 text-xs font-bold transition ${
+            className={`flex flex-col items-center gap-0.5 rounded-full px-5 py-1.5 text-xs font-semibold transition ${
               activeTab === "household"
-                ? "text-emerald-400"
-                : "text-slate-400 hover:text-slate-200"
+                ? "bg-[#e1edfe] text-[#2173be] border border-[#282825]"
+                : "text-[#64645e] hover:text-[#282825]"
             }`}
           >
-            <Users className="h-5 w-5" />
+            <Users className="h-4 w-4" />
             <span>{t.nav.household}</span>
           </button>
         </div>
