@@ -45,6 +45,7 @@ import {
 import {
   formatCurrency,
   formatYearMonthLabel,
+  SHORT_MONTH_NAMES,
   translations,
 } from "@/lib/i18n";
 import {
@@ -1950,18 +1951,35 @@ export default function BudgetAppPage() {
             <div className="font-serif text-xl tracking-wide text-[#282825]">
               {formatYearMonthLabel(yearMonth, locale)}
             </div>
-            {yearMonth !== currentRealYearMonth && (
+            {yearMonth === currentRealYearMonth ? (
+              <span className="rounded-full border border-[#b5e3c4] bg-[#e7f4eb] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#282825]">
+                {locale === "sv" ? "Denna månad" : "Current"}
+              </span>
+            ) : (
               <button
                 type="button"
                 onClick={() => setYearMonth(currentRealYearMonth)}
-                className="rounded-full border border-[#282825] bg-[#e7f4eb] px-2.5 py-0.5 text-[11px] font-bold text-[#282825] hover:bg-[#b5e3c4] transition"
+                className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#f8f8f7] px-2.5 py-0.5 text-[11px] font-bold text-[#282825] hover:bg-[#e7f4eb] transition"
                 title={
                   locale === "sv"
-                    ? "Hoppa till innevarande månad"
-                    : "Jump to current month"
+                    ? "Hoppa tillbaka till innevarande månad"
+                    : "Jump back to current month"
                 }
               >
-                {locale === "sv" ? "Idag" : "Today"}
+                <RotateCcw className="h-3 w-3" />
+                <span>
+                  {locale === "sv"
+                    ? `Till ${
+                        SHORT_MONTH_NAMES.sv[
+                          (Number(currentRealYearMonth.split("-")[1]) || 1) - 1
+                        ]
+                      }`
+                    : `Back to ${
+                        SHORT_MONTH_NAMES.en[
+                          (Number(currentRealYearMonth.split("-")[1]) || 1) - 1
+                        ]
+                      }`}
+                </span>
               </button>
             )}
           </div>
