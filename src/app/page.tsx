@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  Check,
   CheckCircle2,
   Circle,
   Plus,
@@ -1993,7 +1994,7 @@ export default function BudgetAppPage() {
                                   expected_amount: numAmt,
                                   frequency: "monthly",
                                   payment_month: 1,
-                                  entry_mode: "single",
+                                  entry_mode: "standard",
                                   cost_split: quickIncomeSplit,
                                 },
                                 undefined,
@@ -2222,11 +2223,7 @@ export default function BudgetAppPage() {
                           {Math.round(groupVariance) !== 0 && (
                             <span
                               className={`font-bold ${
-                                group.kind === "income"
-                                  ? groupVariance > 0
-                                    ? "text-[#057b40]"
-                                    : "text-[#b81a14]"
-                                  : groupVariance < 0
+                                groupVariance < 0
                                   ? "text-[#057b40]"
                                   : "text-[#b85d10]"
                               }`}
