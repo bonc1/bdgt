@@ -647,7 +647,10 @@ export default function BudgetAppPage() {
     expectedSnapshot: number,
     monthRows: ImportedRowAction[]
   ) => {
-    const monthSum = monthRows.reduce((s, r) => s + r.amount, 0);
+    const monthSum = Math.max(
+      0,
+      Math.round(monthRows.reduce((s, r) => s + r.amount, 0) * 100) / 100
+    );
     const noteText: string | null = null;
 
     const subTxs =
@@ -785,7 +788,10 @@ export default function BudgetAppPage() {
       const sortedMonths = Array.from(byMonth.keys()).sort();
       const latestMonth = sortedMonths[sortedMonths.length - 1] || yearMonth;
       const latestMonthRows = byMonth.get(latestMonth) || merchantRows;
-      const latestMonthSum = latestMonthRows.reduce((s, r) => s + r.amount, 0);
+      const latestMonthSum = Math.max(
+        0,
+        Math.round(latestMonthRows.reduce((s, r) => s + r.amount, 0) * 100) / 100
+      );
 
       // Check if an item with this exact name already exists in the household
       const existingSameName = items.find(

@@ -59,8 +59,9 @@ interface RawTransactionRow {
   yearMonth: string;
   merchantName: string;
   detailNote: string;
-  amount: number; // positive absolute amount
-  rawSignedAmount: number; // negative for expense, positive for income
+  amount: number; // signed expense/income amount in budget terms (positive = standard for group)
+  isIncome: boolean;
+  isRefund: boolean;
 }
 
 interface MerchantGroupCandidate {
@@ -82,11 +83,7 @@ interface MerchantGroupCandidate {
 }
 
 /**
- * Robust numeric parser for Swedish & international bank formats:
- * - Handles Unicode minus sign (\u2212 '−'), en-dash ('–'), em-dash ('—')
- * - Handles trailing minus ('1 245,00-')
- * - Handles accounting parentheses ('(1 245,00)')
- * - Handles space / non-breaking space thousand separators ('1 245,50' or '1.245,50')
+ * Robust numeric parser for Swedish & international bank/card formats
  */
 function parseNumericAmount(raw: unknown): number | null {
   if (typeof raw === "number") {
@@ -153,55 +150,208 @@ function ensureFullWorksheetRange(ws: XLSX.WorkSheet) {
   }
 }
 
+/**
+ * True state-machine CSV parser that properly handles multi-line quoted fields
+ * (Critical for American Express CSV exports which have newlines inside "Adress" and "Ort" quotes!)
+ */
 function parseCsvTextToRows(text: string): string[][] {
-  const lines = text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .filter((l) => l.trim().length > 0);
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (!normalized.trim()) return [];
 
-  if (lines.length === 0) return [];
+  // Detect delimiter outside quotes from the first ~2000 characters
+  const sampleChunk = normalized.slice(0, 2500);
+  let semiCount = 0;
+  let commaCount = 0;
+  let tabCount = 0;
+  let inQ = false;
+  for (let i = 0; i < sampleChunk.length; i++) {
+    const c = sampleChunk[i];
+    if (c === '"') inQ = !inQ;
+    else if (!inQ) {
+      if (c === ";") semiCount++;
+      else if (c === ",") commaCount++;
+      else if (c === "\t") tabCount++;
+    }
+  }
+  let delim = ",";
+  if (semiCount > commaCount && semiCount > tabCount) delim = ";";
+  else if (tabCount > commaCount && tabCount > semiCount) delim = "\t";
 
-  const sampleLines = lines.slice(0, Math.min(12, lines.length));
-  let bestDelim = ",";
-  let bestCount = 0;
-  for (const delim of [";", ",", "\t"]) {
-    const counts = sampleLines.map((l) => l.split(delim).length);
-    const maxCols = Math.max(...counts);
-    if (maxCols > bestCount) {
-      bestCount = maxCols;
-      bestDelim = delim;
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === '"') {
+      if (inQuotes && normalized[i + 1] === '"') {
+        currentCell += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === delim && !inQuotes) {
+      currentRow.push(currentCell.trim());
+      currentCell = "";
+    } else if (ch === "\n" && !inQuotes) {
+      currentRow.push(currentCell.trim());
+      if (currentRow.some((cell) => cell.length > 0)) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      currentCell = "";
+    } else {
+      currentCell += ch;
     }
   }
 
-  return lines.map((line) => {
-    const result: string[] = [];
-    let current = "";
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (ch === bestDelim && !inQuotes) {
-        result.push(current.trim());
-        current = "";
-      } else {
-        current += ch;
-      }
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some((cell) => cell.length > 0)) {
+      rows.push(currentRow);
     }
-    result.push(current.trim());
-    return result;
-  });
+  }
+
+  return rows;
 }
 
 /**
- * Clean & normalize Sparbanken Referens + Beskrivning into a canonical Merchant Name
+ * Parse dates in YYYY-MM-DD, MM/DD/YYYY (Amex), or DD/MM/YYYY
  */
+function parseStatementDate(
+  rawDate: string,
+  preferMonthFirst: boolean
+): string | null {
+  const clean = rawDate.trim();
+  // 1. YYYY-MM-DD or YYYY/MM/DD
+  const isoMatch = clean.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (isoMatch) {
+    const [, y, m, d] = isoMatch;
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // 2. MM/DD/YYYY or DD/MM/YYYY
+  const slashMatch = clean.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (slashMatch) {
+    const p1 = parseInt(slashMatch[1], 10);
+    const p2 = parseInt(slashMatch[2], 10);
+    const y = slashMatch[3];
+    let m = p1;
+    let d = p2;
+    if (p1 > 12) {
+      d = p1;
+      m = p2;
+    } else if (p2 > 12) {
+      m = p1;
+      d = p2;
+    } else if (!preferMonthFirst) {
+      d = p1;
+      m = p2;
+    }
+    if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Normalize noisy Amex & bank merchant names so recurring subscriptions,
+ * restaurants, and stores group cleanly into a single merchant entry!
+ */
+function normalizeMerchantDisplay(rawName: string): string {
+  const s = rawName.replace(/\s+/g, " ").trim();
+  const upper = s.toUpperCase();
+
+  // Amex payment received
+  if (upper.includes("BETALNING MOTTAGEN")) {
+    return "Betalning mottagen (Kortinbetalning)";
+  }
+  if (upper.includes("PERIODENS DEL AV ÅRSAVGIFT")) {
+    return "Amex Årsavgift (Månadsdel)";
+  }
+
+  // Major Subscriptions & Digital Services (strip random invoice/receipt codes)
+  if (/^SPOTIFY\b/.test(upper)) return "Spotify";
+  if (/^NETFLIX/.test(upper)) return "Netflix";
+  if (/^HBOMAX|^HBO MAX/.test(upper)) return "HBO Max";
+  if (/^DISNEY PLUS|^DISNEY\+/.test(upper)) return "Disney+";
+  if (/^VIAPLAY/.test(upper)) return "Viaplay";
+  if (/SKYSHOWTIME/.test(upper)) return "SkyShowtime";
+  if (/^PLEXINC|^PLEX\b/.test(upper)) return "Plex";
+  if (/^APPLE\.COM\/BILL|^APPLE\.COM/.test(upper)) return "Apple / iCloud";
+  if (/GOOGLE\s*\*GOOGLE ONE/.test(upper)) return "Google One";
+  if (/GOOGLE\s*\*GOOGLE PLAY/.test(upper)) return "Google Play";
+  if (/GOOGLE\s*\*GOOGLE PHOTOS/.test(upper)) return "Google Photos";
+  if (/^WWW\.F1\.COM|^F1\.COM/.test(upper)) return "F1 TV (F1.com)";
+  if (/^OMNIPUNKTSE|^OMNI\b/.test(upper)) return "Omni";
+  if (/^DOKLAND/.test(upper)) return "Dokland";
+  if (/PATREON/.test(upper)) return "Patreon";
+  if (/COMADSOFT/.test(upper)) return "Comadsoft";
+  if (/PLAYSTATION/.test(upper)) return "PlayStation";
+  if (/FANTASYPRESIDENTCAREER/.test(upper)) return "Fantasy President Career";
+
+  // E-commerce & Retail (strip *ORDERID codes like AMAZONMKTPLC*NK0E34HS4)
+  if (/^AMAZON PRIME/.test(upper)) return "Amazon Prime";
+  if (/^AMAZONMKTPLC|^AMAZONRETAIL|^AMAZON\.SE|^WWW\.AMAZON/.test(upper)) {
+    return "Amazon.se";
+  }
+  if (/BOOZT/.test(upper)) return "Boozt";
+  if (/ZALANDO/.test(upper)) return "Zalando";
+  if (/^HM\.COM|^H & M HENNES/.test(upper)) return "H&M";
+  if (/^ARKET\.COM|^ARKET\b/.test(upper)) return "Arket";
+  if (/^AHLENS|^ÅHLENS/.test(upper)) return "Åhléns";
+  if (/^LINDEX/.test(upper)) return "Lindex";
+  if (/^LYKO/.test(upper)) return "Lyko";
+  if (/^APOTEK HJARTAT|^APOTEKET/.test(upper)) return "Apotek";
+  if (/^BAUHAUS/.test(upper)) return "Bauhaus";
+  if (/^JULA\b/.test(upper)) return "Jula";
+  if (/^CLAS OHLSON/.test(upper)) return "Clas Ohlson";
+  if (/^GOLVPOOLEN/.test(upper)) return "Golvpoolen";
+  if (/^NORDICNEST/.test(upper)) return "Nordic Nest";
+  if (/^VACKER CENTER/.test(upper)) return "Vacker Center Syd";
+
+  // Groceries & Dining
+  if (/^MAXI ICA|^ICA MAXI|^ICA KVANTUM|^ICA SUPERMARKET|^ICA NÄRA/.test(upper)) {
+    return "ICA Maxi / ICA";
+  }
+  if (/^WILLYS/.test(upper)) return "Willys";
+  if (/^COOP\b/.test(upper)) return "Coop";
+  if (/^SYSTEMBOLAGET|^LÖDDEKÖPINGE 1250/.test(upper)) return "Systembolaget";
+  if (/^MCD\b|^MCDONALD|^MCDMALMO|^MCDLODDE/.test(upper)) return "McDonald's";
+  if (/^MAX BURGERS/.test(upper)) return "Max Burgers";
+  if (/^ESPRESSO HOUSE/.test(upper)) return "Espresso House";
+  if (/^KORT\.CONVINI|^CONVINI/.test(upper)) return "Convini";
+  if (/^REITAN|^PRESSBYRÅN|\bPRESSBYRÅN/.test(upper)) return "Pressbyrån / 7-Eleven";
+  if (/KATJAS\s*PIZZERIA/.test(upper)) return "Katjas Pizzeria";
+
+  // Transit, Bridge, Fuel & Parking
+  if (/^ORESUNDSBRON|^ÖRESUNDSBRON/.test(upper)) return "Öresundsbron";
+  if (/^EASYPARK/.test(upper)) return "EasyPark";
+  if (/^AIMO/.test(upper)) return "Aimo Park";
+  if (/^PARKSTER/.test(upper)) return "Parkster";
+  if (/^ST1\b/.test(upper)) return "St1 Tankning";
+  if (/^OKQ8/.test(upper)) return "OKQ8";
+  if (/^NYCT PAYGO/.test(upper)) return "NYCT Subway (New York)";
+
+  // Strip Amex 2+ space padded trailing city name (e.g. "BAUHAUS LÖDDEKÖ         LÖDDEKÖPINGE")
+  let cleaned = rawName.trim();
+  const multiSpaceParts = cleaned.split(/\s{2,}/);
+  if (multiSpaceParts.length >= 2 && multiSpaceParts[0].length >= 3) {
+    cleaned = multiSpaceParts[0].trim();
+  }
+
+  // Strip payment processor prefixes like "TST* ", "ZETTLE *", "PAYPAL *"
+  cleaned = cleaned
+    .replace(/^(TST\*\s*|ZETTLE\s*\*\s*|PAYPAL\s*\*\s*|SP\s+)/i, "")
+    .replace(/^[,.\s]+|[,.\s]+$/g, "")
+    .trim();
+
+  return cleaned || s;
+}
+
 function buildCleanMerchantName(
   primaryRef: string,
   secondaryDesc: string
@@ -209,43 +359,51 @@ function buildCleanMerchantName(
   const cleanRef = primaryRef.replace(/^[,.\s]+|[,.\s]+$/g, "").trim();
   const cleanDesc = secondaryDesc.replace(/^[,.\s]+|[,.\s]+$/g, "").trim();
 
-  // If Referens is empty, use Beskrivning
+  let rawChosen = cleanRef;
+  let note = cleanDesc;
+
   if (!cleanRef && cleanDesc) {
-    return { merchantName: cleanDesc, detailNote: "" };
-  }
-  if (cleanRef && !cleanDesc) {
-    return { merchantName: cleanRef, detailNote: "" };
-  }
-  if (cleanRef.toLowerCase() === cleanDesc.toLowerCase()) {
-    return { merchantName: cleanRef, detailNote: "" };
+    rawChosen = cleanDesc;
+    note = "";
+  } else if (cleanRef && !cleanDesc) {
+    rawChosen = cleanRef;
+    note = "";
+  } else if (cleanRef.toLowerCase() === cleanDesc.toLowerCase()) {
+    rawChosen = cleanRef;
+    note = "";
+  } else if (/^\d{7,}$/.test(cleanRef.replace(/[\s-]/g, "")) && cleanDesc) {
+    // Sparbanken numeric reference ID -> use Beskrivning
+    rawChosen = cleanDesc;
+    note = cleanRef;
+  } else if (/^AT\d{10,}$/i.test(cleanRef) && cleanDesc) {
+    // Amex reference ID -> use Beskrivning
+    rawChosen = cleanDesc;
+    note = "";
+  } else if (/^AT\d{10,}$/i.test(cleanDesc) && cleanRef) {
+    rawChosen = cleanRef;
+    note = "";
+  } else {
+    const genericLabels = [
+      "kortköp",
+      "autogiro",
+      "betalning",
+      "bankgiro",
+      "plusgiro",
+      "swish",
+    ];
+    if (genericLabels.includes(cleanRef.toLowerCase()) && cleanDesc) {
+      rawChosen = cleanDesc;
+      note = cleanRef;
+    } else if (genericLabels.includes(cleanDesc.toLowerCase()) && cleanRef) {
+      rawChosen = cleanRef;
+      note = cleanDesc;
+    }
   }
 
-  // In Sparbanken, if Referens is a long numeric ID (e.g. "1988123040311281" for Barnbidrag/Dagersättning,
-  // or "831398258548919" for Överföring lån, or "831395143459435" for Överföring via internet),
-  // Beskrivning is the actual human-readable category!
-  if (/^\d{7,}$/.test(cleanRef.replace(/[\s-]/g, "")) && cleanDesc) {
-    return { merchantName: cleanDesc, detailNote: cleanRef };
-  }
-  if (/^\d{7,}$/.test(cleanDesc.replace(/[\s-]/g, "")) && cleanRef) {
-    return { merchantName: cleanRef, detailNote: cleanDesc };
-  }
-
-  const genericLabels = [
-    "kortköp",
-    "autogiro",
-    "betalning",
-    "bankgiro",
-    "plusgiro",
-    "swish",
-  ];
-  if (genericLabels.includes(cleanRef.toLowerCase()) && cleanDesc) {
-    return { merchantName: cleanDesc, detailNote: cleanRef };
-  }
-  if (genericLabels.includes(cleanDesc.toLowerCase()) && cleanRef) {
-    return { merchantName: cleanRef, detailNote: cleanDesc };
-  }
-
-  return { merchantName: cleanRef, detailNote: cleanDesc };
+  return {
+    merchantName: normalizeMerchantDisplay(rawChosen),
+    detailNote: note,
+  };
 }
 
 function extractCleanMerchantKeyword(desc: string): string {
@@ -264,7 +422,7 @@ function extractCleanMerchantKeyword(desc: string): string {
 }
 
 /**
- * Suggest the best BudgetGroup and human category hint for a Swedish/Nordic merchant
+ * Suggest the best BudgetGroup and human category hint for a Swedish/Nordic/Amex merchant
  */
 function suggestGroupAndCategory(
   merchantName: string,
@@ -292,25 +450,26 @@ function suggestGroupAndCategory(
     groups.find((g) => g.kind === "expense") ||
     groups[0];
 
-  // 1. Detect internal account transfers ("Överföring via internet", "Överföring", "Insättning")
-  // Note: "Överföring lån" is a mortgage/loan payment, NOT an internal skip transfer!
+  // 1. Internal transfers & Credit Card bill payments ("Betalning mottagen", "Överföring via internet")
   if (
-    /^(överföring via internet|överföring|insättning|egen överföring)$/i.test(
+    /^(överföring via internet|överföring|insättning|egen överföring|betalning mottagen)/i.test(
       lower
     )
   ) {
     return {
       groupId: isIncome ? incomeGroup.id : dailyGroup.id,
       categoryHint:
-        locale === "sv" ? "Intern överföring" : "Internal transfer",
+        locale === "sv"
+          ? "Kortinbetalning / Överföring"
+          : "Card Payment / Transfer",
       isInternalTransfer: true,
     };
   }
 
-  // 2. Income items (Lön, Barnbidrag, Dagersättning, Skatteverket, Ers skada)
+  // 2. Income items (Lön, Barnbidrag, Dagersättning)
   if (
     isIncome ||
-    /lön|barnbidrag|dagersättning|föräldrapenning|försäkringskassan|ers skada|återbäring|utdelning/.test(
+    /^(lön|barnbidrag|dagersättning|föräldrapenning|försäkringskassan|ers skada|utdelning)$/i.test(
       lower
     )
   ) {
@@ -321,7 +480,7 @@ function suggestGroupAndCategory(
     };
   }
 
-  // 3. Savings & Investments (Avanza, Månadsspar, LF Fondliv, Nordnet, Lysa)
+  // 3. Savings & Investments
   if (
     /avanza|nordnet|månadsspar|fondliv|lysa|opti|isk|sparande|bospar/.test(
       lower
@@ -335,13 +494,35 @@ function suggestGroupAndCategory(
     };
   }
 
-  // 4. Housing, Loans, Electricity, Broadband, Security, Municipality
+  // 4. Streaming, Digital Subscriptions & Media
   if (
-    /överföring lån|bolån|sbab|landshypotek|e\.on|eon|vattenfall|ellevio|tibber|fortum|skånska energi|telia|telenor|bahnhof|tele2|tre |verisure|sector alarm|kävlinge kommun|kommun|hsb|riksbyggen|hyra|badrum/.test(
+    /spotify|netflix|hbo|disney|viaplay|skyshowtime|plex|apple|google one|google play|google photos|f1 tv|f1\.com|omni|dokland|patreon|comadsoft|playstation|amazon prime|amex årsavgift/.test(
       lower
     )
   ) {
-    const subHint = /lån|bolån/.test(lower)
+    return {
+      groupId: dailyGroup.id,
+      categoryHint:
+        locale === "sv"
+          ? "Prenumeration & Streaming"
+          : "Subscription & Media",
+      isInternalTransfer: false,
+    };
+  }
+
+  // 5. Housing, Renovation, Electricity, Broadband, Security
+  if (
+    /överföring lån|bolån|sbab|landshypotek|e\.on|eon|vattenfall|ellevio|tibber|fortum|skånska energi|telia|telenor|bahnhof|tele2|verisure|sector alarm|kävlinge kommun|kommun|hsb|riksbyggen|hyra|badrum|bauhaus|golvpoolen|jula|clas ohlson|granngarden|rusta|impecta/.test(
+      lower
+    )
+  ) {
+    const subHint = /bauhaus|golvpoolen|jula|clas ohlson|badrum|rusta|granngarden/.test(
+      lower
+    )
+      ? locale === "sv"
+        ? "Hem, Renovering & Trädgård"
+        : "Home & DIY"
+      : /lån|bolån/.test(lower)
       ? locale === "sv"
         ? "Bolån / Lån"
         : "Loan / Mortgage"
@@ -349,10 +530,6 @@ function suggestGroupAndCategory(
       ? locale === "sv"
         ? "El & Energi"
         : "Electricity"
-      : /telia|telenor|bahnhof|tele2/.test(lower)
-      ? locale === "sv"
-        ? "Bredband & Telefoni"
-        : "Broadband & Phone"
       : locale === "sv"
       ? "Boende & Drift"
       : "Housing & Utilities";
@@ -364,23 +541,25 @@ function suggestGroupAndCategory(
     };
   }
 
-  // 5. Insurance, Car, CSN, Loans, Transit
+  // 6. Transport, Bridge, Fuel, Parking, Insurance, CSN
   if (
-    /lf motor|lf skåne|länsförsäkringar|swedb försäk|tre kronor|if skade|trygg-hansa|folksam|hedvig|moderna|santander|csn|parkster|easypark|aimo|transportstyrels|skånetrafiken|sl |västtrafik|circle k|okq8|preem/.test(
+    /öresundsbron|oresundsbron|easypark|aimo|parkster|st1|okq8|circle k|preem|sj ab|rejsekort|nyct|uber|lirr|lf motor|lf skåne|länsförsäkringar|swedb försäk|tre kronor|santander|csn|transportstyrels/.test(
       lower
     )
   ) {
-    const subHint = /lf |försäk|tre kronor|trygg|folksam|hedvig/.test(lower)
+    const subHint = /öresundsbron|oresundsbron|st1|okq8|easypark|aimo|parkster|sj |uber|nyct/.test(
+      lower
+    )
+      ? locale === "sv"
+        ? "Transport, Bro & Bränsle"
+        : "Transit, Bridge & Fuel"
+      : /lf |försäk|tre kronor/.test(lower)
       ? locale === "sv"
         ? "Försäkring"
         : "Insurance"
-      : /csn|santander/.test(lower)
-      ? locale === "sv"
-        ? "Lån & CSN"
-        : "Loans & CSN"
       : locale === "sv"
-      ? "Transport & Bil"
-      : "Transport & Car";
+      ? "Lån & Transport"
+      : "Loans & Transport";
 
     return {
       groupId: transportInsGroup.id,
@@ -389,29 +568,31 @@ function suggestGroupAndCategory(
     };
   }
 
-  // 6. Union, A-kassa, Gym, Charity, Healthcare, Credit Cards, Groceries
-  const subHint = /sv ingenj|union|akassa|a-kassa|fack/.test(lower)
+  // 7. Groceries, Restaurants, Shopping, Travel
+  const subHint = /ica |willys|coop|hemköp|lidl|systembolaget|fruktaffär/.test(
+    lower
+  )
     ? locale === "sv"
-      ? "Fack & A-kassa"
-      : "Union & Unemployment"
-    : /nordicwell|sats|friskis|gym|träning/.test(lower)
+      ? "Mat & Dagligvaror"
+      : "Groceries"
+    : /mcdonald|max burgers|espresso house|convini|pressbyrån|pizzeria|laziza|osteria|vapiano|phuun thai|starbucks|diner|taco|burger|red lobster|chao ban/.test(
+        lower
+      )
     ? locale === "sv"
-      ? "Träning & Hälsa"
-      : "Fitness & Health"
-    : /seb kort|american express|amex|mastercard|kort/.test(lower)
+      ? "Restaurang & Café"
+      : "Dining & Café"
+    : /amazon\.se|boozt|zalando|h&m|arket|åhléns|ahlens|lindex|lyko|vacker|uniqlo|macys|nordstrom|aritzia|levi|j crew|sephora|kicks|babysam/.test(
+        lower
+      )
     ? locale === "sv"
-      ? "Kreditkortsfaktura"
-      : "Credit Card Bill"
-    : /rädda barnen|unicef|röda korset|gåva/.test(lower)
+      ? "Shopping & Kläder"
+      : "Shopping & Apparel"
+    : /hotel|moxy|cph\.dk|esta|ticketmaster/.test(lower)
     ? locale === "sv"
-      ? "Välgörenhet"
-      : "Charity"
-    : /region skåne|folktandvård|vård|apotek/.test(lower)
-    ? locale === "sv"
-      ? "Vård & Tandvård"
-      : "Healthcare"
+      ? "Resor & Upplevelser"
+      : "Travel & Events"
     : locale === "sv"
-    ? "Mat & Vardag"
+    ? "Vardag & Övrigt"
     : "Daily & Other";
 
   return {
@@ -428,7 +609,6 @@ function matchItemWithRules(
 ): { item?: BudgetItem; matchedRule?: MerchantRule } {
   const lower = merchantName.toLowerCase();
 
-  // 1. Check user's saved Smart Merchant Rules first
   for (const rule of rules) {
     const pat = rule.pattern.trim().toLowerCase();
     if (pat && lower.includes(pat)) {
@@ -439,7 +619,6 @@ function matchItemWithRules(
     }
   }
 
-  // 2. Direct substring match with existing BudgetItem name
   for (const it of items) {
     const itemLower = it.name.toLowerCase();
     if (itemLower === lower) return { item: it };
@@ -449,16 +628,11 @@ function matchItemWithRules(
     }
   }
 
-  // 3. Built-in matchers for default starter items
   if (/^lön$/i.test(lower)) {
-    return {
-      item: items.find((i) => /lön|salary/i.test(i.name)),
-    };
+    return { item: items.find((i) => /lön|salary/i.test(i.name)) };
   }
   if (/e\.on|eon|vattenfall|ellevio|tibber|fortum/.test(lower)) {
-    return {
-      item: items.find((i) => /\bel|elräkning|electr/i.test(i.name)),
-    };
+    return { item: items.find((i) => /\bel|elräkning|electr/i.test(i.name)) };
   }
   if (/telia|telenor|bahnhof/.test(lower)) {
     return {
@@ -475,7 +649,7 @@ function matchItemWithRules(
       item: items.find((i) => /månadsspar|sparande|isk|buffer/i.test(i.name)),
     };
   }
-  if (/ica|willys|coop|hemköp|lidl|mathem/.test(lower)) {
+  if (/ica maxi|ica|willys|coop|hemköp|lidl|mathem/.test(lower)) {
     return {
       item: items.find(
         (i) =>
@@ -506,6 +680,7 @@ export function BankImportModal({
   const [descColIdx, setDescColIdx] = useState<number>(1);
   const [secondaryDescColIdx, setSecondaryDescColIdx] = useState<number>(-1);
   const [amountColIdx, setAmountColIdx] = useState<number>(2);
+  const [isCreditCardMode, setIsCreditCardMode] = useState<boolean>(false);
   const [showColumnMapper, setShowColumnMapper] = useState<boolean>(false);
 
   const [merchantGroups, setMerchantGroups] = useState<
@@ -522,7 +697,6 @@ export function BankImportModal({
   const [newRulePattern, setNewRulePattern] = useState("");
   const [newRuleItemId, setNewRuleItemId] = useState(items[0]?.id || "");
 
-  // Distinct YYYY-MM months present across all parsed transactions
   const availableMonths = useMemo(() => {
     const set = new Set<string>();
     for (const mg of merchantGroups) {
@@ -543,13 +717,50 @@ export function BankImportModal({
     dCol: number,
     tCol: number,
     tCol2: number,
-    aCol: number
+    aCol: number,
+    creditCardSignMode: boolean
   ) => {
+    // Check if slash dates in this file are MM/DD/YYYY (like Amex "10/16/2026")
+    let preferMonthFirst = creditCardSignMode;
+    for (let i = startRow; i < Math.min(startRow + 40, rows.length); i++) {
+      const r = rows[i];
+      if (!r) continue;
+      const dStr = String(r[dCol] ?? "").trim();
+      const m = dStr.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+      if (m) {
+        const p1 = parseInt(m[1], 10);
+        const p2 = parseInt(m[2], 10);
+        if (p1 <= 12 && p2 > 12) {
+          preferMonthFirst = true;
+          break;
+        }
+        if (p1 > 12 && p2 <= 12) {
+          preferMonthFirst = false;
+          break;
+        }
+      }
+    }
+
     const rawTxs: RawTransactionRow[] = [];
 
     for (let i = startRow; i < rows.length; i++) {
       const r = rows[i];
       if (!r || r.length < 2) continue;
+
+      const firstCellText = String(r[0] ?? "").trim();
+      // Stop if we hit Amex's bottom summary block ("Transaktionssammanfattning" / "Aktivitet utifrån kort")
+      if (
+        /^(transaktionssammanfattning|aktivitet utifrån kort|kortmedlem)$/i.test(
+          firstCellText
+        )
+      ) {
+        break;
+      }
+
+      const rawDate = String(r[dCol] ?? "").trim();
+      const parsedDate = parseStatementDate(rawDate, preferMonthFirst);
+      // Skip metadata/footer lines that do not have a valid transaction date
+      if (!parsedDate) continue;
 
       const primaryText = String(r[tCol] ?? "").trim();
       const secondaryText =
@@ -567,22 +778,40 @@ export function BankImportModal({
         continue;
       }
 
-      const absAmount = Math.abs(rawAmt);
-      const rawDate = String(r[dCol] ?? "").trim();
-      const dateMatch = rawDate.match(/(\d{4}[-/.]\d{2}[-/.]\d{2})/);
-      const cleanDate = dateMatch
-        ? dateMatch[1].replace(/[/.]/g, "-")
-        : `${yearMonth}-15`;
-      const txYearMonth = cleanDate.slice(0, 7);
+      // Sign convention:
+      // - In Bank Account mode (Sparbanken): negative (-751) is an Expense, positive (+27957) is Income
+      // - In Credit Card mode (Amex): positive (+89) is an Expense, negative (-1777.5) is a Refund or Card Bill Payment
+      let isIncome = false;
+      let isRefund = false;
+      let signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+
+      if (creditCardSignMode) {
+        isIncome = false;
+        if (rawAmt < 0) {
+          if (/betalning mottagen/i.test(merchantName)) {
+            signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+          } else {
+            // Credit card refund (e.g. Boozt / Arket return): subtracts from expense total!
+            isRefund = true;
+            signedExpenseOrIncomeAmt = -Math.abs(rawAmt);
+          }
+        }
+      } else {
+        isIncome = rawAmt > 0;
+        signedExpenseOrIncomeAmt = Math.abs(rawAmt);
+      }
+
+      const txYearMonth = parsedDate.slice(0, 7);
 
       rawTxs.push({
         id: `tx-${i}`,
-        date: cleanDate,
+        date: parsedDate,
         yearMonth: txYearMonth,
         merchantName,
         detailNote,
-        amount: absAmount,
-        rawSignedAmount: rawAmt,
+        amount: signedExpenseOrIncomeAmt,
+        isIncome,
+        isRefund,
       });
     }
 
@@ -599,11 +828,10 @@ export function BankImportModal({
 
     setErrorMsg(null);
 
-    // Group transactions by normalized (merchantName + isIncome) so recurring bills are categorized ONCE!
+    // Group transactions by normalized merchantName
     const groupedMap = new Map<string, RawTransactionRow[]>();
     for (const tx of rawTxs) {
-      const isInc = tx.rawSignedAmount > 0;
-      const normKey = `${isInc ? "INC" : "EXP"}::${tx.merchantName
+      const normKey = `${tx.isIncome ? "INC" : "EXP"}::${tx.merchantName
         .toLowerCase()
         .replace(/\s+/g, " ")
         .trim()}`;
@@ -616,13 +844,18 @@ export function BankImportModal({
 
     for (const [normKey, txList] of groupedMap.entries()) {
       const first = txList[0];
-      const isIncome = first.rawSignedAmount > 0;
+      const isIncome = first.isIncome;
       const distinctMonths = Array.from(
         new Set(txList.map((t) => t.yearMonth))
       ).sort();
-      const totalAmount = txList.reduce((s, t) => s + t.amount, 0);
-      const avgAmount = Math.round(totalAmount / distinctMonths.length);
-      const latestAmount = txList[0].amount;
+      const rawTotal = txList.reduce((s, t) => s + t.amount, 0);
+      const totalAmount = Math.max(0, Math.round(rawTotal * 100) / 100);
+      const avgAmount = Math.max(
+        0,
+        Math.round(totalAmount / Math.max(1, distinctMonths.length))
+      );
+      const latestPositive =
+        txList.find((t) => t.amount > 0)?.amount || Math.abs(first.amount);
 
       const { item: matchedItem, matchedRule } = matchItemWithRules(
         first.merchantName,
@@ -633,22 +866,15 @@ export function BankImportModal({
       const { groupId, categoryHint, isInternalTransfer } =
         suggestGroupAndCategory(first.merchantName, isIncome, groups, locale);
 
-      // Determine smart default action:
-      // 1. If internal transfer ("Överföring via internet", "Överföring", "Insättning") -> default to "skip"
-      // 2. If matched to an existing item -> "existing_item"
-      // 3. If appears across >= 2 months OR is a known monthly bill -> "new_monthly"
-      // 4. Otherwise -> "new_once"
       const knownRecurringPattern =
-        /lf |försäk|csn|santander|telia|telenor|e\.on|vattenfall|verisure|kävlinge kommun|nordicwell|union|sv ingenj|rädda barnen|avanza|månadsspar|barnbidrag|lön|hsb|tre kronor/i.test(
+        /spotify|netflix|hbo|disney|viaplay|skyshowtime|plex|apple|google one|f1 tv|omni|dokland|patreon|comadsoft|amazon prime|amex årsavgift|lf |försäk|csn|santander|telia|telenor|e\.on|vattenfall|verisure|kävlinge kommun|nordicwell|union|sv ingenj|rädda barnen|avanza|månadsspar|barnbidrag|lön|hsb|tre kronor/i.test(
           first.merchantName
         );
       const isRecurring =
-        distinctMonths.length >= 2 ||
-        txList.length >= 2 ||
-        knownRecurringPattern;
+        distinctMonths.length >= 2 || knownRecurringPattern;
 
       let defaultAction: MerchantGroupCandidate["actionType"] = "new_once";
-      if (isInternalTransfer) {
+      if (isInternalTransfer || totalAmount === 0) {
         defaultAction = "skip";
       } else if (matchedItem) {
         defaultAction = "existing_item";
@@ -663,7 +889,7 @@ export function BankImportModal({
         distinctMonths,
         isIncome,
         avgAmount,
-        latestAmount,
+        latestAmount: latestPositive,
         totalAmount,
         actionType: defaultAction,
         targetItemId: matchedItem?.id || defaultItemId,
@@ -675,14 +901,13 @@ export function BankImportModal({
       });
     }
 
-    // Sort: recurring & multi-row merchants first, skipped internal transfers at the bottom
     groupedCandidates.sort((a, b) => {
       if (a.actionType === "skip" && b.actionType !== "skip") return 1;
       if (a.actionType !== "skip" && b.actionType === "skip") return -1;
       if (b.distinctMonths.length !== a.distinctMonths.length) {
         return b.distinctMonths.length - a.distinctMonths.length;
       }
-      return b.transactions.length - a.transactions.length;
+      return b.totalAmount - a.totalAmount;
     });
 
     setMerchantGroups(groupedCandidates);
@@ -713,6 +938,15 @@ export function BankImportModal({
     let tCol = 1;
     let tCol2 = -1;
     let aCol = 2;
+    let detectedCreditCard = false;
+
+    // Check top metadata lines for Amex / Credit card indicators
+    for (let r = 0; r < Math.min(10, nonEmptyRows.length); r++) {
+      const joined = nonEmptyRows[r].map((c) => String(c ?? "")).join(" ");
+      if (/amex|american express|kortmedlem|kreditkort|mastercard/i.test(joined)) {
+        detectedCreditCard = true;
+      }
+    }
 
     for (let r = 0; r < Math.min(30, nonEmptyRows.length); r++) {
       const row = nonEmptyRows[r].map((c) =>
@@ -721,105 +955,61 @@ export function BankImportModal({
           .trim()
       );
 
-      // Prefer Transaktionsdag over Bokföringsdag so end-of-month bills stay in their transaction month
+      if (row.some((h) => /kortmedlem|visas på ditt kontoutdrag/.test(h))) {
+        detectedCreditCard = true;
+      }
+
       const txDayIdx = row.findIndex((h) => /^transaktionsdag$/.test(h));
       const dIdx =
         txDayIdx !== -1
           ? txDayIdx
           : row.findIndex(
               (h) =>
-                /^(bokföringsdag|bokf\.?dag|valutadag|datum|date|köpdag)$/.test(
+                /^(datum|date|bokföringsdag|bokf\.?dag|valutadag|köpdag)$/.test(
                   h
                 ) || /bokföringsdag|transaktionsdag|datum|date/.test(h)
             );
 
-      const refIdx = row.findIndex((h) =>
-        /^(referens|mottagare|specifikation|text|merchant|butik|inköpsställe)$/.test(
-          h
-        )
-      );
       const descIdx = row.findIndex(
         (h, idx) =>
           idx !== dIdx &&
-          idx !== refIdx &&
-          /^(beskrivning|text|rubrik|description|transaktion|meddelande|notering)$/.test(
+          /^(beskrivning|specifikation|text|rubrik|description|merchant|butik|mottagare)$/.test(
             h
           )
       );
+      const refIdx = row.findIndex(
+        (h, idx) => idx !== dIdx && idx !== descIdx && /^referens$/.test(h)
+      );
+      const cardMemberIdx = row.findIndex((h) => /^kortmedlem$/.test(h));
 
       const aIdx = row.findIndex(
         (h) =>
-          !/saldo|balance/.test(h) &&
+          !/saldo|balance|konto\s*#/.test(h) &&
           /^(belopp|amount|summa|utgift|utgifter|debit|kostnad|insättning\/uttag)$/.test(
             h
           )
       );
-      const fallbackAIdx =
-        aIdx !== -1
-          ? aIdx
-          : row.findIndex(
-              (h) =>
-                !/saldo|balance/.test(h) && /belopp|amount|summa/.test(h)
-            );
 
-      const primaryTextIdx = refIdx !== -1 ? refIdx : descIdx;
-      const secondaryTextIdx =
-        refIdx !== -1 && descIdx !== -1 ? descIdx : -1;
+      // In Amex, "Beskrivning" is col 1 and "Referens" is col 11 ("AT2628...").
+      // In Sparbanken, "Referens" is col 4 ("LF MOTOR") and "Beskrivning" is col 5 ("Kortköp").
+      let primaryTextIdx = descIdx !== -1 ? descIdx : refIdx;
+      let secondaryTextIdx = -1;
 
-      if (primaryTextIdx !== -1 && fallbackAIdx !== -1) {
+      if (detectedCreditCard && descIdx !== -1) {
+        primaryTextIdx = descIdx;
+        secondaryTextIdx = cardMemberIdx !== -1 ? cardMemberIdx : -1;
+      } else if (refIdx !== -1 && descIdx !== -1) {
+        primaryTextIdx = refIdx;
+        secondaryTextIdx = descIdx;
+      }
+
+      if (primaryTextIdx !== -1 && aIdx !== -1) {
         detectedHeaderRow = r;
         dCol = dIdx !== -1 ? dIdx : 0;
         tCol = primaryTextIdx;
         tCol2 = secondaryTextIdx;
-        aCol = fallbackAIdx;
+        aCol = aIdx;
         break;
-      }
-    }
-
-    if (detectedHeaderRow === -1) {
-      for (let r = 0; r < Math.min(15, nonEmptyRows.length); r++) {
-        const row = nonEmptyRows[r].map((c) => String(c ?? "").trim());
-        if (row.length < 2) continue;
-        const foundDateCol = row.findIndex((val) =>
-          /^\d{4}[-/.]\d{2}[-/.]\d{2}/.test(val)
-        );
-        const numCols: number[] = [];
-        row.forEach((val, idx) => {
-          if (idx === foundDateCol) return;
-          if (/^\d{4}[-/.]\d{2}[-/.]\d{2}$/.test(val)) return;
-          const parsedNum = parseNumericAmount(val);
-          if (
-            parsedNum !== null &&
-            (/[-−,.\s]/.test(val) || Math.abs(parsedNum) < 1000000)
-          ) {
-            numCols.push(idx);
-          }
-        });
-
-        if (foundDateCol !== -1 && numCols.length > 0) {
-          detectedHeaderRow = Math.max(0, r - 1);
-          dCol = foundDateCol;
-          aCol =
-            numCols.length >= 2
-              ? numCols[numCols.length - 2]
-              : numCols[0];
-          const candidateTextCols = row
-            .map((val, idx) => ({ val, idx }))
-            .filter(
-              (x) =>
-                x.idx > dCol &&
-                x.idx !== aCol &&
-                x.val.length > 1 &&
-                !/^\d{4}[-/.]\d{2}[-/.]\d{2}$/.test(x.val) &&
-                parseNumericAmount(x.val) === null
-            );
-          if (candidateTextCols.length > 0) {
-            tCol = candidateTextCols[0].idx;
-            tCol2 =
-              candidateTextCols.length > 1 ? candidateTextCols[1].idx : -1;
-          }
-          break;
-        }
       }
     }
 
@@ -829,6 +1019,7 @@ export function BankImportModal({
     setDescColIdx(tCol);
     setSecondaryDescColIdx(tCol2);
     setAmountColIdx(aCol);
+    setIsCreditCardMode(detectedCreditCard);
 
     buildGroupedCandidatesFromColumns(
       nonEmptyRows,
@@ -836,7 +1027,8 @@ export function BankImportModal({
       dCol,
       tCol,
       tCol2,
-      aCol
+      aCol,
+      detectedCreditCard
     );
   };
 
@@ -880,41 +1072,23 @@ export function BankImportModal({
     }
   };
 
-  const handleLoadSample = () => {
-    setFileName("Transaktioner_Hushallskonto_Sparbanken.csv");
-    processRawRows([
-      ["Transaktioner Hushållskonto", "", "", "", "", "", "", ""],
-      [
-        "Radnummer",
-        "Bokföringsdag",
-        "Transaktionsdag",
-        "Valutadag",
-        "Referens",
-        "Beskrivning",
-        "Belopp",
-        "Bokfört saldo",
-      ],
-      ["2", "2026-10-16", "2026-10-20", "2026-10-21", "1988123040311281", "Barnbidrag", "625", "48723.47"],
-      ["3", "2026-10-16", "2026-10-20", "2026-10-21", "1994072020281281", "Barnbidrag", "625", "48098.47"],
-      ["9", "2026-10-01", "2026-10-01", "2026-10-01", "LF MOTOR", "LF MOTOR", "-751", "111857.47"],
-      ["10", "2026-10-01", "2026-10-01", "2026-10-01", "LF Skåne", "LF Skåne", "-595", "112608.47"],
-      ["11", "2026-10-01", "2026-10-01", "2026-10-01", "LF Skåne", "LF Skåne", "-307", "113203.47"],
-      ["15", "2026-09-30", "2026-09-30", "2026-09-30", "CSN", "CSN", "-1541", "113737.47"],
-      ["17", "2026-09-30", "2026-09-30", "2026-09-30", "831398258548919", "Överföring lån", "-4314", "115373.47"],
-      ["18", "2026-09-30", "2026-09-30", "2026-09-30", "831398258548901", "Överföring lån", "-3814", "119687.47"],
-      ["20", "2026-09-30", "2026-09-30", "2026-09-30", "Santander", "Santander", "-3372", "23501.47"],
-      ["22", "2026-09-30", "2026-09-30", "2026-09-30", "Kävlinge kommun", "Kävlinge kommun", "-752", "27263.47"],
-      ["23", "2026-09-30", "2026-09-30", "2026-09-30", "Verisure Sverige", "Verisure Sverige", "-1587", "28015.47"],
-      ["24", "2026-09-30", "2026-09-30", "2026-09-30", "Telia bredband,", "Telia bredband,", "-749", "29602.47"],
-      ["26", "2026-09-28", "2026-09-28", "2026-09-28", "AVANZA BANK", "AVANZA BANK", "-2000", "30621.47"],
-      ["32", "2026-09-28", "2026-09-28", "2026-09-28", "E.ON", "E.ON", "-1983", "89756.82"],
-      ["38", "2026-09-24", "2026-09-25", "2026-09-25", "", "Lön", "22678", "62294.82"],
-      ["39", "2026-09-24", "2026-09-25", "2026-09-25", "", "Lön", "27957.85", "39616.82"],
-      ["43", "2026-09-01", "2026-09-01", "2026-09-01", "LF MOTOR", "LF MOTOR", "-728", "5008.97"],
-      ["49", "2026-08-31", "2026-08-31", "2026-08-30", "CSN", "CSN", "-1541", "6887.97"],
-      ["55", "2026-08-31", "2026-08-31", "2026-08-30", "Telia bredband,", "Telia bredband,", "-749", "39980.99"],
-      ["66", "2026-08-28", "2026-08-28", "2026-08-28", "E.ON", "E.ON", "-1963", "79116.29"],
-    ]);
+  const handleLoadAmexSample = () => {
+    setFileName("SAS_Amex_Premium_2026.csv");
+    const sampleCsv = `Transaktionsspecifikationer,"SAS Amex Premium / 01 Jan, 2026 till 31 Dec, 2026"
+Datum,Beskrivning,Kortmedlem,Konto #,Belopp,Utökade specifikationer,Visas på ditt kontoutdrag som,Adress,Ort,Postnummer,Land,Referens,Kategori
+10/16/2026,DOKLAND VIA STRIPE      STOCKHOLM,A C HEDESTAM,-52009,89,,DOKLAND,"SKEPPARGATAN 65\nSTOCKHOLM",,114 59,SWEDEN,AT262890026000010091837,Miscellaneous-Other
+10/15/2026,ORESUNDSBRON.COM        KOPENHAVN,A C HEDESTAM,-52009,268,,ORESUNDSBRON,"KALKBROTTSGATAN 141\nMALMO",,S-216 30,SWEDEN,AT262890026000010087657,Miscellaneous-Other
+10/13/2026,GOOGLE *GOOGLE ONE      G.CO/HELPPAY#,A C HEDESTAM,-52009,255,,GOOGLE ONE,"DUBLIN 2",,2,IRELAND,AT262870072000010006515,Miscellaneous-Other
+10/08/2026,MAXI ICA STORMARKNAD LO LODDEKOPINGE,A C HEDESTAM,-52009,911.1,,ICA MAXI,"LÖDDEKÖPINGE",,S-246 42,SWEDEN,AT262820028000010086888,Miscellaneous-Other
+10/08/2026,MCD 0310 MALMÖ ANNA     MALMÖ,A C HEDESTAM,-52009,123,,MCD,"MALMO",,S-211 19,SWEDEN,AT262820028000010086492,Miscellaneous-Other
+10/04/2026,NETFLIX.COM 519485      NL,A C HEDESTAM,-52009,169,,NETFLIX,"AMSTERDAM",,1016 GD,NETHERLANDS,AT262770041000010006441,Miscellaneous-Other
+10/02/2026,HBOMAX                  STOCKHOLM,A C HEDESTAM,-52009,149,,HBOMAX,"STOCKHOLM",,S-103 96,SWEDEN,AT262750027000010091900,Miscellaneous-Other
+09/29/2026,SPOTIFY P476FC7EF2 6844 STOCKHOLM,A C HEDESTAM,-52009,189,,SPOTIFY,"LONDON",,WC2N 6HT,UK,AT262730072000010007384,Miscellaneous-Other
+09/28/2026,"BETALNING MOTTAGEN, TACK",A C HEDESTAM,-52009,-44649.04,,"BETALNING MOTTAGEN",,,,,AT262720083000010024191,
+09/21/2026,DISNEY PLUS             HOOFDDORP,A C HEDESTAM,-52009,159,,DISNEY PLUS,"AMSTERDAM",,1101 AX,NETHERLANDS,AT262640028000010084186,Miscellaneous-Other
+08/29/2026,SPOTIFY P463CF202F 6844 STOCKHOLM,A C HEDESTAM,-52009,189,,SPOTIFY,"LONDON",,WC2N 6HT,UK,AT262420060000010005384,Miscellaneous-Other
+08/04/2026,NETFLIX.COM 519485      NL,A C HEDESTAM,-52009,169,,NETFLIX,"AMSTERDAM",,1016 GD,NETHERLANDS,AT262160047000010007612,Miscellaneous-Other`;
+    processRawRows(parseCsvTextToRows(sampleCsv));
   };
 
   const updateMerchantGroup = (
@@ -949,7 +1123,6 @@ export function BankImportModal({
     await onSaveMerchantRules(nextRules);
   };
 
-  // Filter transactions by selected monthScope ("all" or specific "YYYY-MM")
   const visibleMerchantGroups = merchantGroups
     .map((mg) => {
       const filteredTxs =
@@ -982,7 +1155,6 @@ export function BankImportModal({
     if (activeTransactionsCount === 0) return;
     setImporting(true);
     try {
-      // 1. Save any new Smart Merchant Rules for existing_item mappings
       const updatedRules = [...merchantRules];
       let rulesChanged = false;
 
@@ -1020,7 +1192,6 @@ export function BankImportModal({
         await onSaveMerchantRules(updatedRules);
       }
 
-      // 2. Flatten grouped merchant decisions into ImportedRowAction[]
       const actions: ImportedRowAction[] = [];
       for (const mg of visibleMerchantGroups) {
         if (mg.actionType === "skip") continue;
@@ -1062,23 +1233,23 @@ export function BankImportModal({
       >
         <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-[#c5c5ba]" />
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-start justify-between gap-2">
           <div>
-            <h3 className="font-serif text-2xl text-[#282825]">
+            <h3 className="font-serif text-2xl leading-snug text-[#282825]">
               {locale === "sv"
-                ? "Bankimport & Auto-Gruppering"
-                : "Bank Import & Auto-Grouping"}
+                ? "Bank- & Kortimport (Sparbanken, Amex m.fl.)"
+                : "Bank & Card Import (Amex, Bank CSV/XLSX)"}
             </h3>
-            <p className="text-xs text-[#64645e]">
+            <p className="mt-0.5 text-xs text-[#64645e]">
               {locale === "sv"
-                ? "Samma betalningsmottagare grupperas automatiskt så du bara kategoriserar dem en gång."
-                : "Recurring merchants are grouped automatically so you only categorize them once."}
+                ? "Grupperar automatiskt återkommande köp, prenumerationer och butiker."
+                : "Automatically groups recurring subscriptions and merchants."}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full border border-[#c5c5ba] bg-white p-2 text-[#282825]"
+            className="rounded-full border border-[#c5c5ba] bg-white p-2 text-[#282825] shrink-0"
           >
             <X className="h-4 w-4" />
           </button>
@@ -1113,8 +1284,8 @@ export function BankImportModal({
                   type="text"
                   placeholder={
                     locale === "sv"
-                      ? "Sökord (t.ex. ica, tibber)"
-                      : "Keyword (e.g. ica, uber)"
+                      ? "Sökord (t.ex. ica, spotify)"
+                      : "Keyword (e.g. ica, spotify)"
                   }
                   value={newRulePattern}
                   onChange={(e) => setNewRulePattern(e.target.value)}
@@ -1172,18 +1343,18 @@ export function BankImportModal({
         {/* Upload Dropzone */}
         <div className="mt-3 flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-[#282825]/40 bg-white p-4 text-center">
           <FileSpreadsheet className="h-6 w-6 text-[#057b40] mb-1.5" />
-          <p className="text-xs font-semibold text-[#282825]">
+          <p className="text-xs font-semibold text-[#282825] break-all">
             {fileName
               ? fileName
               : locale === "sv"
-              ? "Välj en Excel (.xlsx / .xls) eller CSV-fil från din bank"
-              : "Choose an Excel (.xlsx / .xls) or CSV statement file"}
+              ? "Välj en CSV- eller Excel-fil (.csv / .xlsx) från bank eller Amex"
+              : "Choose a CSV or Excel statement file (.csv / .xlsx)"}
           </p>
           <div className="mt-2.5 flex flex-wrap items-center justify-center gap-2">
             <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-[#0c0d0d] px-4 py-2 text-xs font-semibold text-white hover:bg-[#282825]">
               <Upload className="h-3.5 w-3.5" />
               <span>
-                {locale === "sv" ? "Välj fil (.xlsx / .csv)" : "Select file"}
+                {locale === "sv" ? "Välj fil (.csv / .xlsx)" : "Select file"}
               </span>
               <input
                 type="file"
@@ -1194,46 +1365,72 @@ export function BankImportModal({
             </label>
             <button
               type="button"
-              onClick={handleLoadSample}
+              onClick={handleLoadAmexSample}
               className="inline-flex items-center gap-1 rounded-full border border-[#282825] bg-[#e7f4eb] px-3.5 py-2 text-xs font-semibold text-[#057b40]"
             >
               <Sparkles className="h-3.5 w-3.5" />
               <span>
-                {locale === "sv"
-                  ? "Testa Sparbanken-exempel"
-                  : "Load sample rows"}
+                {locale === "sv" ? "Testa Amex-exempel" : "Load Amex sample"}
               </span>
             </button>
           </div>
         </div>
 
-        {/* Manual Column Mapping Adjuster */}
+        {/* Statement Type & Column Mapping Bar */}
         {rawGrid.length > 0 && headerLabels.length > 1 && (
           <div className="mt-3 rounded-2xl border border-[#c5c5ba] bg-white p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-[#282825] flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
                 <SlidersHorizontal className="h-3.5 w-3.5 text-[#057b40]" />
-                {locale === "sv"
-                  ? "Identifierade kolumner i filen"
-                  : "Detected file columns"}
-              </span>
-              <button
-                type="button"
-                onClick={() => setShowColumnMapper((v) => !v)}
-                className="text-[11px] font-semibold text-[#2173be] underline"
-              >
-                {showColumnMapper
-                  ? locale === "sv"
-                    ? "Dölj"
-                    : "Hide"
-                  : locale === "sv"
-                  ? "Ändra kolumner"
-                  : "Change columns"}
-              </button>
+                <span className="text-xs font-semibold text-[#282825]">
+                  {isCreditCardMode
+                    ? locale === "sv"
+                      ? "Läge: Kreditkort (Amex / Kort)"
+                      : "Mode: Credit Card (Amex)"
+                    : locale === "sv"
+                    ? "Läge: Bankkonto (Sparbanken m.fl.)"
+                    : "Mode: Bank Account"}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextMode = !isCreditCardMode;
+                    setIsCreditCardMode(nextMode);
+                    buildGroupedCandidatesFromColumns(
+                      rawGrid,
+                      headerRowIdx + 1,
+                      dateColIdx,
+                      descColIdx,
+                      secondaryDescColIdx,
+                      amountColIdx,
+                      nextMode
+                    );
+                  }}
+                  className="rounded-full border border-[#c5c5ba] bg-[#f8f8f7] px-2.5 py-1 text-[11px] font-semibold text-[#282825] hover:border-[#282825]"
+                >
+                  {locale === "sv" ? "Växla Bank/Kort" : "Switch Bank/Card"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowColumnMapper((v) => !v)}
+                  className="text-[11px] font-semibold text-[#2173be] underline"
+                >
+                  {showColumnMapper
+                    ? locale === "sv"
+                      ? "Dölj kolumner"
+                      : "Hide columns"
+                    : locale === "sv"
+                    ? "Ändra kolumner"
+                    : "Change columns"}
+                </button>
+              </div>
             </div>
 
             {showColumnMapper && (
-              <div className="mt-2.5 grid grid-cols-3 gap-2 pt-2 border-t border-[#ecece9] text-[11px]">
+              <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-[#ecece9] text-[11px]">
                 <div>
                   <label className="block font-semibold text-[#64645e] mb-1">
                     {locale === "sv" ? "Datum" : "Date"}
@@ -1249,7 +1446,8 @@ export function BankImportModal({
                         nextD,
                         descColIdx,
                         secondaryDescColIdx,
-                        amountColIdx
+                        amountColIdx,
+                        isCreditCardMode
                       );
                     }}
                     className="w-full rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2 py-1.5 text-[#282825]"
@@ -1264,7 +1462,7 @@ export function BankImportModal({
 
                 <div>
                   <label className="block font-semibold text-[#64645e] mb-1">
-                    {locale === "sv" ? "Referens / Text" : "Merchant / Text"}
+                    {locale === "sv" ? "Beskrivning / Butik" : "Description"}
                   </label>
                   <select
                     value={descColIdx}
@@ -1277,7 +1475,8 @@ export function BankImportModal({
                         dateColIdx,
                         nextT,
                         secondaryDescColIdx,
-                        amountColIdx
+                        amountColIdx,
+                        isCreditCardMode
                       );
                     }}
                     className="w-full rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2 py-1.5 text-[#282825]"
@@ -1305,7 +1504,8 @@ export function BankImportModal({
                         dateColIdx,
                         descColIdx,
                         secondaryDescColIdx,
-                        nextA
+                        nextA,
+                        isCreditCardMode
                       );
                     }}
                     className="w-full rounded-xl border border-[#c5c5ba] bg-[#f8f8f7] px-2 py-1.5 text-[#282825]"
@@ -1332,14 +1532,13 @@ export function BankImportModal({
         {/* Grouped Merchants List */}
         {merchantGroups.length > 0 && (
           <div className="mt-4 space-y-3">
-            {/* Multi-month Filter Pills when statement spans multiple months */}
             {availableMonths.length > 1 && (
               <div className="rounded-2xl border border-[#c5c5ba] bg-white p-2.5">
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#64645e] mb-1.5">
                   <Calendar className="h-3.5 w-3.5 text-[#057b40]" />
                   <span>
                     {locale === "sv"
-                      ? `Filen innehåller ${availableMonths.length} månader — välj vad som ska importeras:`
+                      ? `Filen sträcker sig över ${availableMonths.length} månader — välj urval:`
                       : `Statement spans ${availableMonths.length} months — choose scope:`}
                   </span>
                 </div>
@@ -1378,12 +1577,12 @@ export function BankImportModal({
             <div className="flex items-center justify-between text-xs font-semibold text-[#64645e]">
               <span>
                 {locale === "sv"
-                  ? `${visibleMerchantGroups.length} unika mottagare (${activeTransactionsCount} rader)`
-                  : `${visibleMerchantGroups.length} unique merchants (${activeTransactionsCount} rows)`}
+                  ? `${visibleMerchantGroups.length} grupperade mottagare (${activeTransactionsCount} köp)`
+                  : `${visibleMerchantGroups.length} grouped merchants (${activeTransactionsCount} txs)`}
               </span>
               <span>
                 {activeGroupsCount}{" "}
-                {locale === "sv" ? "aktiva grupper" : "active groups"}
+                {locale === "sv" ? "valda" : "selected"}
               </span>
             </div>
 
@@ -1391,9 +1590,9 @@ export function BankImportModal({
               {visibleMerchantGroups.map((mg) => {
                 const isExpanded = Boolean(expandedKeys[mg.merchantKey]);
                 const txCount = mg.filteredTxs.length;
-                const filteredSum = mg.filteredTxs.reduce(
-                  (s, t) => s + t.amount,
-                  0
+                const filteredSum = Math.max(
+                  0,
+                  mg.filteredTxs.reduce((s, t) => s + t.amount, 0)
                 );
                 const isRecurringGroup = mg.distinctMonths.length >= 2;
 
@@ -1419,7 +1618,19 @@ export function BankImportModal({
                           }`}
                         >
                           {mg.isIncome ? "+" : ""}
-                          {formatCurrency(mg.latestAmount, currency, locale)}
+                          {formatCurrency(
+                            monthScope === "all" && txCount > 1
+                              ? mg.avgAmount
+                              : filteredSum,
+                            currency,
+                            locale
+                          )}
+                          {monthScope === "all" &&
+                            mg.distinctMonths.length > 1 && (
+                              <span className="font-sans text-[10px] font-normal text-[#64645e]">
+                                /{locale === "sv" ? "mån" : "mo"}
+                              </span>
+                            )}
                         </div>
                         {txCount > 1 && (
                           <div className="mt-0.5 font-mono text-[10px] text-[#64645e]">
@@ -1477,11 +1688,11 @@ export function BankImportModal({
                           {txCount}{" "}
                           {locale === "sv"
                             ? txCount === 1
-                              ? "rad"
-                              : "rader"
+                              ? "köp"
+                              : "köp"
                             : txCount === 1
-                            ? "row"
-                            : "rows"}
+                            ? "tx"
+                            : "txs"}
                         </span>
                       </button>
                     </div>
@@ -1496,9 +1707,16 @@ export function BankImportModal({
                           >
                             <span className="break-words">
                               {tx.date}
-                              {tx.detailNote ? ` (${tx.detailNote})` : ""}
+                              {tx.detailNote ? ` • ${tx.detailNote}` : ""}
                             </span>
-                            <span className="font-bold text-[#282825] shrink-0 ml-2">
+                            <span
+                              className={`font-bold shrink-0 ml-2 ${
+                                tx.isRefund
+                                  ? "text-[#057b40]"
+                                  : "text-[#282825]"
+                              }`}
+                            >
+                              {tx.isRefund ? "Retur " : ""}
                               {formatCurrency(tx.amount, currency, locale)}
                             </span>
                           </div>
@@ -1591,8 +1809,8 @@ export function BankImportModal({
                 <Check className="h-4 w-4" />
                 <span>
                   {locale === "sv"
-                    ? `Importera ${activeGroupsCount} poster (${activeTransactionsCount} transaktioner)`
-                    : `Import ${activeGroupsCount} items (${activeTransactionsCount} transactions)`}
+                    ? `Importera ${activeGroupsCount} poster (${activeTransactionsCount} köp)`
+                    : `Import ${activeGroupsCount} items (${activeTransactionsCount} txs)`}
                 </span>
               </button>
             </div>
